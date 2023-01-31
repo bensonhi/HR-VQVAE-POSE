@@ -1,7 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
 
-# In[1]:
 
 
 import sys
@@ -18,7 +15,7 @@ import numpy as np
 from torch import nn
 
 
-# In[2]:
+
 
 
 batch_size = 100
@@ -27,7 +24,7 @@ lamda_name = 'vqvae_videomnist_1_00099'
 ckpt_path = '../video/checkpoints/videomnist/vqvae/1/00099.pt'
 
 
-# In[3]:
+
 
 
 model = VQVAE_1(in_channel=1,
@@ -42,27 +39,9 @@ model.load_state_dict(torch.load(ckpt_path))
 model = model.to(device)
 
 
-# In[4]:
-
-
-
-
 extract(model, lamda_name, device, video_batch=10)
-
-
-# In[132]:
-
-
-
-
-
-# In[98]:
-
-
 plt.imshow(frame.cpu().detach().numpy()[0,0,:,:])
 
-
-# In[42]:
 
 
 sample_size = 1
@@ -95,8 +74,6 @@ plt.imshow(img)
 plt.show()
 
 
-# In[45]:
-
 
 sample_size = 20
 dataset_lmdb = MnistVideoCodeLMDBDataset(lamda_name,sample_size)
@@ -127,10 +104,3 @@ with torch.no_grad():
 img = plt.imread('sample_extract.png')
 plt.imshow(img)
 plt.show()
-
-
-# In[ ]:
-
-
-
-
