@@ -1,6 +1,3 @@
-
-
-
 import sys
 sys.path.append('../video')
 sys.path.append('../image/modified')
