@@ -1,9 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[1]:
-
-
 import sys
 sys.path.append('../video')
 from train_vqvae_video import train
@@ -33,23 +27,12 @@ model = VQVAE(in_channel=1,
                 decay=0.99, )
 
 
-# In[3]:
-
 
 videos_dir  = '../video/datasets/kth/kth_human_actions/running'
 kthpath = "../video/datasets/kth/"
 lmdb_path = kthpath + 'kth_running_lmdb'
 
-
-# In[4]:
-
-
 out_image = []
-
-
-# In[5]:
-
-
 def callback(sample, out, epoch):
     print(sample.shape)
     print(out.shape)
@@ -72,31 +55,7 @@ def callback(sample, out, epoch):
     plt.show()
 
 
-# In[6]:
-
-
 dataset = lmdb_kth_running(lmdb_path, 1)
-
-
-# In[ ]:
-
-
-
 train(dataset, model, epoch_num, batch_size, lr, device, run_num, image_samples, callback)
 
-
-# In[ ]:
-
-
 od = out_image.detach().cpu().numpy()
-# for i in range(10):
-#     plt.imshow(od[i,:,:].detach().cpu().numpy()/256)
-#     plt.show()
-
-
-# In[ ]:
-
-
-od[1,:,:]
-
-
