@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
 import argparse
 import sys
 import numpy as np
@@ -22,13 +19,8 @@ from torch import optim, nn
 import matplotlib.pyplot as plt
 
 
-# In[ ]:
-
-
 def get_optimizer(model, lr):
     return optim.Adam(model.parameters(), lr=lr)
-
-
 
 
 
@@ -140,4 +132,3 @@ optimizer = get_optimizer(model, lr)
 
 for epoch in range(epoch_num):
     train(epoch, loader, model, optimizer, scheduler = None, run_num=run_num, image_samples=image_samples, device=device)
-
