@@ -9,9 +9,7 @@ from dataloader import video_mnist_dataloader
 import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
-
 from torchvision import utils
-
 from tqdm import tqdm
 
 from m_vqvae_multi_level8 import VQVAE_ML
@@ -21,8 +19,6 @@ import matplotlib.pyplot as plt
 
 def get_optimizer(model, lr):
     return optim.Adam(model.parameters(), lr=lr)
-
-
 
 run_num = "test_4*16"
 batch_size = 12
@@ -36,8 +32,6 @@ n_res_channel =512
 embed_dim=256
 n_level = 4
 n_embed= 16
-
-
 
 def train(epoch_num, loader, model, optimizer, scheduler,run_num ,image_samples, device):
     loader = tqdm(loader)
@@ -105,15 +99,11 @@ def train(epoch_num, loader, model, optimizer, scheduler,run_num ,image_samples,
             #print(recon_loss.item())
             model.train()
 
-
-
-ffhq_path = "/home/stipendiater/mohamadi/vp/video/datasets/ffhq"
-lmdb_path = ffhq_path + 'ffhq_lmdb'
+path = "path to the lmdb folder"
+lmdb_path = path + 'name of the lmdb file'
 dataset = lmdb_ffhq(lmdb_path)
 in_channel = 3
 loader = video_mnist_dataloader(dataset, batch_size, shuffle=True, num_workers=4, drop_last=True)
-
-
 
 model = VQVAE_ML(
             in_channel=in_channel,
@@ -126,7 +116,6 @@ model = VQVAE_ML(
             decay=0.99).to(device)
 
 model = model.to(device)
-
 
 optimizer = get_optimizer(model, lr)
 
