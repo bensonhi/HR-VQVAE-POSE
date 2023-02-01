@@ -11,8 +11,8 @@ from image.modified.m_vqvae import VQVAE_1
 from torch import nn
 import torch
 
-lambda_name = 'vqvae_videomnist_1_00099'
-vqvae_ckpt_path = '../video/checkpoints/videomnist/vqvae/1/00099.pt'
+lambda_name = 'lamda name'
+vqvae_ckpt_path = 'path to the chekpoint'
 
 input_channel = 8
 epoch_num = 10
@@ -37,7 +37,7 @@ vqvae_model = nn.DataParallel(vqvae_model)
 vqvae_model.load_state_dict(torch.load(vqvae_ckpt_path))
 vqvae_model = vqvae_model.to(device)
 
-videomnist_path = '../video/datasets/mnist/moving_mnist/mnist_test_seq.npy'
+videomnist_path = 'path to the test set'
 orginal_frames = np.load(videomnist_path)
 orginal_frames = orginal_frames.swapaxes(0, 1).astype(np.float32)
 orginal_frames[orginal_frames > 0] = 1.
