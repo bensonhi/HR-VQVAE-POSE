@@ -5,4 +5,8 @@ HR-VQVAE Paper: https://arxiv.org/pdf/2208.04554.pdf
 
 Official link: https://bmvc2022.mpi-inf.mpg.de/0636.pdf
 
-<a href='https://postimg.cc/ZByPyfsp' target='_blank'><img src='https://i.postimg.cc/nz33ggvR/16-Figure11-1.png' border='0' alt='16-Figure11-1'/></a>
+<a href='https://postimg.cc/bZhzXsjh' target='_blank'><img src='https://i.postimg.cc/Z590dd7C/hrvqvae-ffhq-supp.png' border='0' alt='hrvqvae-ffhq-supp'/></a>
+
+<a href='https://postimg.cc/zyXcRrCh' target='_blank'><img src='https://i.postimg.cc/dV8PpQD5/multi-comparison.png' border='0' alt='multi-comparison'/></a>
+
+<a href='https://postimg.cc/7CzdqN1t' target='_blank'><img src='https://i.postimg.cc/CKrgHPR0/mlvae-diff-layers.png' border='0' alt='mlvae-diff-layers'/></a>
