@@ -10,5 +10,6 @@ Official link: https://bmvc2022.mpi-inf.mpg.de/0636.pdf
   Reconstructions:<br />
   <img src="https://github.com/mohammad-adiban/Video-Prediction/blob/main/figs/img_recon.png" width="450" title="hover text"><br /><br />
   Generations:<br />
-  <img src="https://github.com/mohammad-adiban/Video-Prediction/blob/main/figs/img2.png" width="450" title="hover text">
+  <img src="https://github.com/mohammad-adiban/Video-Prediction/blob/main/figs/img2.png" width="450" title="hover text"><br />
+  <img src="https://github.com/mohammad-adiban/Video-Prediction/blob/main/figs/img3.png" width="450" title="hover text">
 </p>
