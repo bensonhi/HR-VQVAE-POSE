@@ -16,7 +16,7 @@ Official link: https://bmvc2022.mpi-inf.mpg.de/0636.pdf
   <img src="https://github.com/mohammad-adiban/Video-Prediction/blob/main/figs/img3.png" width="450" title="hover text">
 </p><br />
 
-
+Cite us:
 ```bash
 @article{adiban2022hierarchical,
   title={Hierarchical Residual Learning Based Vector Quantized Variational Autoencoder for Image Reconstruction and Generation},
