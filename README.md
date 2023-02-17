@@ -15,6 +15,8 @@ Official link: https://bmvc2022.mpi-inf.mpg.de/0636.pdf
   MNIST Dataset:<br />
   <img src="https://github.com/mohammad-adiban/Video-Prediction/blob/main/figs/img3.png" width="450" title="hover text">
 </p><br />
+
+
 ```bash
 @article{adiban2022hierarchical,
   title={Hierarchical Residual Learning Based Vector Quantized Variational Autoencoder for Image Reconstruction and Generation},
@@ -22,4 +24,9 @@ Official link: https://bmvc2022.mpi-inf.mpg.de/0636.pdf
   journal={arXiv preprint arXiv:2208.04554},
   year={2022}
 }
+```
+```bash
+git clone https://github.com/ultralytics/yolov5  # clone
+cd yolov5
+pip install -r requirements.txt  # install
 ```
