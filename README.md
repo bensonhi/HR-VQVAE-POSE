@@ -25,8 +25,3 @@ Official link: https://bmvc2022.mpi-inf.mpg.de/0636.pdf
   year={2022}
 }
 ```
-```bash
-git clone https://github.com/ultralytics/yolov5  # clone
-cd yolov5
-pip install -r requirements.txt  # install
-```
