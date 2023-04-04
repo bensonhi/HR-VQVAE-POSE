@@ -23,34 +23,64 @@ class MaskedConv3d(nn.Conv3d):
         self.weight.data *= self.mask
         return super().forward(x)
 
+    
+class MultiheadAttention3d(nn.Module):
+    def __init__(self, input_channels, hidden_channels, num_heads):
+        super().__init__()
+        self.input_channels = input_channels
+        self.hidden_channels = hidden_channels
+        self.num_heads = num_heads
+        self.qkv = nn.Linear(input_channels, hidden_channels * 3)
+        self.proj = nn.Linear(hidden_channels, input_channels)
+        
+    def forward(self, x):
+        b, c, d, h, w = x.size()
+        qkv = self.qkv(x).view(b, d, h, w, 3, self.num_heads, self.hidden_channels // self.num_heads)
+        q, k, v = qkv.permute(4, 0, 5, 1, 6, 2, 3).contiguous().view(3, -1, d * h * w, self.hidden_channels // self.num_heads)
+        attn_weights = torch.softmax((q @ k.transpose(-2, -1)) / (self.hidden_channels ** 0.5), dim=-1)
+        attn_output = (attn_weights @ v).transpose(1, 2).contiguous().view(b, self.num_heads, d, h, w, self.hidden_channels // self.num_heads)
+        attn_output = self.proj(attn_output.view(b, -1, self.hidden_channels))
+        attn_output = attn_output.view(b, c, d, h, w)
+        return attn_output
 
+    
 class SpatioTemporalPixelCNN(nn.Module):
     def __init__(self, input_channels, hidden_channels, num_layers):
         super().__init__()
         self.input_channels = input_channels
         self.hidden_channels = hidden_channels
         self.num_layers = num_layers
-        
+
+        # Multi-head Attention layer
+        self.attention = nn.MultiheadAttention(hidden_channels, num_heads=4, dropout=0.1)
+
+        # Layers
         self.layers = nn.ModuleList()
         for i in range(num_layers):
             if i == 0:
-                # first layer
+                # First layer
                 layer = MaskedConv3d('A', input_channels, hidden_channels, kernel_size=3, padding=1)
             else:
-                # intermediate layers
+                # Intermediate layers
                 layer = MaskedConv3d('B', hidden_channels, hidden_channels, kernel_size=3, padding=1)
+                if (i+1) % 5 == 0:
+                    layer = nn.Sequential(layer, nn.BatchNorm3d(hidden_channels), nn.ReLU(), self.attention)
+
             self.layers.append(layer)
-            
+
+        # Output convolution
         self.conv_out = nn.Conv3d(hidden_channels, input_channels, kernel_size=1, padding=0)
 
     def forward(self, x):
         h = x
         for layer in self.layers:
             h = F.relu(layer(h))
+
         x = self.conv_out(h)
         return x
 
-#Spatio-temporal PixelCNN for anticipation
+    
+#Prediction Spatio-temporal PixelCNN
 class SpaTempPixelCNN_VP(nn.Module):
     def __init__(self, input_channels, hidden_channels, num_layers, seq_len, img_shape):
         super().__init__()
