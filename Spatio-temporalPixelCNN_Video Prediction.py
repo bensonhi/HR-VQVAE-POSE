@@ -15,9 +15,18 @@ class MaskedConv3d(nn.Conv3d):
             self.mask[:, :, kh//2, :kw//2, :] = 1
             self.mask[:, :, kh//2, kw//2, :kd//2] = 1
         else:
-            self.mask[:, :, kh//2+1:, :, :] = 1
-            self.mask[:, :, kh//2, kw//2+1:, :] = 1
-            self.mask[:, :, kh//2, kw//2, kd//2+1:] = 1
+            # Modify the else block to create a raster scan ordering mask
+            h, w, d = self.weight.shape[-3:]
+            diagonal_len = h + w - 1 + d
+            mask = torch.zeros(diagonal_len, h, w, d, dtype=torch.float32)
+            for i in range(diagonal_len):
+                for j in range(max(0, i-d+1), min(i+1, h), 1):
+                    for k in range(max(0, i-j-d+1), min(i-j+1, w), 1):
+                        l = i-j-k
+                        if 0 <= l < d:
+                            mask[i, j, k, l] = 1
+            self.mask = mask.sum(0).unsqueeze(0).unsqueeze(0).repeat(self.out_channels, self.in_channels, 1, 1, 1)
+            self.mask[:, :, h//2, w//2, d//2+1:] = 1
 
     def forward(self, x):
         self.weight.data *= self.mask
