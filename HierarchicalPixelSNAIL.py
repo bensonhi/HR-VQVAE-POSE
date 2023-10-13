@@ -74,5 +74,4 @@ class HierarchicalPixelSNAIL(pl.LightningModule):
         bottom_loss = self.criterion(out_bottom, in_bottom)
         loss = top_loss + bottom_loss
         self.log('val_loss', loss)
-
         return loss, top_loss, bottom_loss
