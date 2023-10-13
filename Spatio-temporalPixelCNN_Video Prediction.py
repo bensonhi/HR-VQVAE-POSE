@@ -117,8 +117,17 @@ class SpaTempPixelCNN_VP(nn.Module):
         )
 
     def forward(self, x):
-        # Split input into sequence of frames
+        # Split input into a sequence of frames
         x = x.view(-1, self.seq_len, self.input_channels, self.img_shape[0], self.img_shape[1])
 
         # Encode spatio-temporal features with SpatioTemporalPixelCNN
+        h = self.st_pixelcnn(x)
+
+        # Upsample the features
+        h = self.upsample(h)
+
+        # Pass the features through a Convolutional LSTM
+        h, _ = self.lstm(h)
+
+        return h
 
