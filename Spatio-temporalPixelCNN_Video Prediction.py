@@ -122,8 +122,6 @@ class SpaTempPixelCNN_VP(nn.Module):
 
         # Encode spatio-temporal features with SpatioTemporalPixelCNN
         h = self.st_pixelcnn(x)
-
-        # Upsample the features
         h = self.upsample(h)
 
         # Pass the features through a Convolutional LSTM
