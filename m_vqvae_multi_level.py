@@ -180,7 +180,7 @@ class VQVAE_ML(nn.Module):
             stride=4,
     ):
         super().__init__()
-        self.device = 'cpu'
+        self.device = 'cuda'
         self.enc = Encoder(in_channel, channel, n_res_block, n_res_channel, stride=stride)
         # self.enc_t = Encoder(channel, channel, n_res_block, n_res_channel, stride=2)
         self.quantize_conv = nn.Conv2d(channel, embed_dim, 1)

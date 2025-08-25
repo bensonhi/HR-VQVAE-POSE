@@ -203,7 +203,7 @@ class VQVAE_Pose_ML(nn.Module):
             stride=4,
     ):
         super().__init__()
-        self.device = 'cpu'
+        self.device = 'cuda'
         
         # Main encoder
         self.enc = Encoder(in_channel, channel, n_res_block, n_res_channel, stride=stride)
