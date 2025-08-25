@@ -12,13 +12,13 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
     mse_sum = 0
     mse_n = 0
 
-    for i, (img, label) in enumerate(loader):
+    for i, (data, label) in enumerate(loader):
         model.zero_grad()
 
-        img = img.to(device)
+        data = data.to(device)
 
-        out, latent_loss = model(img)
-        recon_loss = criterion(out, img)
+        out, latent_loss = model(data)
+        recon_loss = criterion(out, data)
         latent_loss = latent_loss.mean()
         loss = recon_loss + latent_loss_weight * latent_loss
         loss.backward()
@@ -27,8 +27,8 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
             scheduler.step()
         optimizer.step()
 
-        mse_sum += recon_loss.item() * img.shape[0]
-        mse_n += img.shape[0]
+        mse_sum += recon_loss.item() * data.shape[0]
+        mse_n += data.shape[0]
 
         lr = optimizer.param_groups[0]['lr']
 
@@ -43,4 +43,4 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
     writer.add_scalar('Loss/train', mse_sum / mse_n, epoch_num)
 
     if do_sample:
-        sampler(folder_name, model, img, dataset_name, run_num, epoch_num, img.shape[0])
+        sampler(folder_name, model, data, dataset_name, run_num, epoch_num, data.shape[0])

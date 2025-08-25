@@ -6,23 +6,34 @@ import torch
 from torchvision.utils import save_image
 from m_util import get_runtime_sampler_path
 from torchvision import utils
-from sample import sample_model
+# from sample import sample_model
 
 
 @torch.no_grad()
-def vqvae_sampler(folder_name, model, imgs, dataset_name, run_num, epoch, batch_size):
+def vqvae_sampler(folder_name, model, data, dataset_name, run_num, epoch, batch_size):
+    import os
     path = get_runtime_sampler_path(folder_name, dataset_name, run_num, epoch)
-
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    
     with torch.no_grad():
-        out, _ = model(imgs)
+        out, _ = model(data)
 
-    utils.save_image(
-        torch.cat([imgs, out], 0),
-        path,
-        nrow=batch_size,
-        normalize=True,
-        range=(-1, 1),
-    )
+    if 'beat2' in dataset_name.lower() or 'pose' in dataset_name.lower():
+        # For pose data, save as numpy arrays instead of images
+        import numpy as np
+        np.savez(
+            path + '.npz',
+            original=data.cpu().numpy(),
+            reconstructed=out.cpu().numpy()
+        )
+    else:
+        # For image data, save as images
+        utils.save_image(
+            torch.cat([data, out], 0),
+            path + '.png',
+            nrow=batch_size,
+            normalize=True,
+        )
 
 
 def runtime_vqvae_sampler(model, imgs, dataset_name, run_num, epoch, batch_size):

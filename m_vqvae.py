@@ -4,7 +4,7 @@ from torch import nn
 
 sys.path.append('../')
 
-from image.vqvae import Quantize, Decoder, Encoder
+from m_vqvae_multi_level import Quantize, Decoder, Encoder
 
 
 class VQVAE_1(nn.Module):

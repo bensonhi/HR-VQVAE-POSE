@@ -24,7 +24,19 @@ def model_option_parser(model_type, conf_path):
             'n_out_res_block': model.getint('n_out_res_block'),
             'attention': model.getboolean('attention')
         }
-    elif model_type in ['vqvae','vqvae_1']:
+    elif model_type == 'vqvae':
+        return {
+            'in_channel': model.getint('in_channel'),
+            'channel': model.getint('channel'),
+            'n_res_block': model.getint('n_res_block'),
+            'n_res_channel': model.getint('n_res_channel'),
+            'embed_dim': model.getint('embed_dim'),
+            'n_level': model.getint('n_level'),
+            'n_embed': model.getint('n_embed'),
+            'decay': model.getfloat('decay'),
+            'stride': model.getint('stride'),
+        }
+    elif model_type == 'vqvae_1':
         return {
             'in_channel': model.getint('in_channel'),
             'channel': model.getint('channel'),

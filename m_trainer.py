@@ -65,8 +65,9 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
 
     optimizer = get_optimizer(model, lr)
 
-    if amp is not None:
-        model, optimizer = amp.initialize(model, optimizer, opt_level=amp)
+    # Disable AMP for now
+    # if amp is not None:
+    #     model, optimizer = amp.initialize(model, optimizer, opt_level=amp)
 
     model = nn.DataParallel(model)
     model = model.to(device)
@@ -81,7 +82,7 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
             scheduler = get_scheduler(lr, end_epoch - start_epoch, sched, optimizer, loader)
 
             train_pixelsnail(i, loader, model,writer , do_sample, sampler, optimizer, scheduler, device)
-            save_path = get_path(dataset_name, n_run, model, folder_name, checkpoint=i)
+            save_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
 
             torch.save(
                 {'model': model.module.state_dict(), 'args': args},
@@ -89,11 +90,11 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
             )
 
     elif model_type in [VQVAE, VQVAE_1]:
-        scheduler = get_scheduler(args, sched, optimizer, loader)
+        scheduler = get_scheduler(lr, end_epoch - start_epoch, sched, optimizer, loader)
         for i in range(start_epoch, end_epoch):
             sample_iter += 1
             do_sample = sample_period > 0 and sample_iter % sample_period ==0
 
             train_vqvae(folder_name, i, loader, model,writer , do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run)
-            save_path = get_path(dataset_name, n_run, model, folder_name, checkpoint=i)
+            save_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
             torch.save(model.state_dict(), save_path)

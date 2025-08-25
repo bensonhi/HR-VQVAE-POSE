@@ -3,8 +3,8 @@ from m_data_loader import get_lmdb_pixel_loader, get_image_loader
 from m_preprocessing import get_mnist_transform, get_imagenet_transform
 from m_sample import vqvae_sampler
 
-dataset_name = 'fashion_mnist'
-folder_name = 'vqvae_1'
+dataset_name = 'beat2_poses'
+folder_name = 'vqvae'
 
 n_run = 0
 start_epoch = -1
@@ -27,10 +27,26 @@ elif folder_name == 'bottom':
     loader = get_lmdb_pixel_loader(dataset_name, n_run, batch_size,
                                    x_name='bottom', cond='top', shuffle=True, num_workers=4)
 elif folder_name == 'vqvae_1':
-    loader = get_image_loader(dataset_name, batch_size, transform=get_mnist_transform(), shuffle=True, num_workers=2)
+    from m_beat_dataset import get_beat_pose_loader
+    loader = get_beat_pose_loader(
+        data_path='BEAT2',
+        language='english', 
+        batch_size=16,
+        sequence_length=120,
+        shuffle=True,
+        num_workers=0
+    )
 
 elif folder_name == 'vqvae':
-    loader = get_image_loader(dataset_name, batch_size, transform= get_imagenet_transform(size), shuffle=True, num_workers=4)
+    from m_beat_dataset import get_beat_pose_loader
+    loader = get_beat_pose_loader(
+        data_path='BEAT2',
+        language='english',
+        batch_size=16, 
+        sequence_length=120,
+        shuffle=True,
+        num_workers=0
+    )
 
 train(
        folder_name,
