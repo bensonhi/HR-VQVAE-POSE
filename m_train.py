@@ -31,8 +31,8 @@ elif folder_name == 'vqvae_1':
     loader = get_beat_pose_loader(
         data_path='BEAT2',
         language='english', 
-        batch_size=16,
-        sequence_length=120,
+        batch_size=32,
+        sequence_length=1,
         shuffle=True,
         num_workers=0
     )
@@ -42,8 +42,8 @@ elif folder_name == 'vqvae':
     loader = get_beat_pose_loader(
         data_path='BEAT2',
         language='english',
-        batch_size=16, 
-        sequence_length=120,
+        batch_size=32, 
+        sequence_length=1,
         shuffle=True,
         num_workers=0
     )

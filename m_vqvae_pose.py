@@ -57,9 +57,10 @@ class ResBlock1D(nn.Module):
     def __init__(self, in_channel, channel):
         super().__init__()
 
+        # For single frames, use kernel=1 to avoid size issues
         self.conv = nn.Sequential(
             nn.ReLU(inplace=True),
-            nn.Conv1d(in_channel, channel, 3, padding=1),
+            nn.Conv1d(in_channel, channel, 1),  # kernel=1 for single frames
             nn.ReLU(inplace=True),
             nn.Conv1d(channel, in_channel, 1),
         )
@@ -74,24 +75,14 @@ class Encoder(nn.Module):
     def __init__(self, in_channel, channel, n_res_block, n_res_channel, stride):
         super().__init__()
         
-        if stride == 4:
-            blocks = [
-                nn.Conv1d(in_channel, channel // 2, 4, stride=2, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv1d(channel // 2, channel, 4, stride=2, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv1d(channel, channel, 3, padding=1),
-            ]
-        elif stride == 2:
-            blocks = [
-                nn.Conv1d(in_channel, channel // 2, 4, stride=2, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv1d(channel // 2, channel, 3, padding=1),
-            ]
-        elif stride == 1:
-            blocks = [
-                nn.Conv1d(in_channel, channel, 3, padding=1),
-            ]
+        # For single frames, use stride=1 and kernel=1 to avoid size issues
+        blocks = [
+            nn.Conv1d(in_channel, channel // 2, 1),  # kernel=1 for single frames
+            nn.ReLU(inplace=True),
+            nn.Conv1d(channel // 2, channel, 1),     # kernel=1 for single frames
+            nn.ReLU(inplace=True),
+            nn.Conv1d(channel, channel, 1),          # kernel=1 for single frames
+        ]
 
         for i in range(n_res_block):
             blocks.append(ResBlock1D(channel, n_res_channel))
@@ -107,23 +98,20 @@ class Decoder(nn.Module):
     def __init__(self, in_channel, out_channel, channel, n_res_block, n_res_channel, stride):
         super().__init__()
 
-        blocks = [nn.Conv1d(in_channel, channel, 3, padding=1)]
+        # For single frames, use kernel=1 to avoid size issues
+        blocks = [nn.Conv1d(in_channel, channel, 1)]  # kernel=1 for single frames
 
         for i in range(n_res_block):
             blocks.append(ResBlock1D(channel, n_res_channel))
 
         blocks.append(nn.ReLU(inplace=True))
-
-        if stride == 4:
-            blocks.extend([
-                nn.ConvTranspose1d(channel, channel // 2, 4, stride=2, padding=1),
-                nn.ReLU(inplace=True),
-                nn.ConvTranspose1d(channel // 2, out_channel, 4, stride=2, padding=1),
-            ])
-        elif stride == 2:
-            blocks.append(nn.ConvTranspose1d(channel, out_channel, 4, stride=2, padding=1))
-        elif stride == 1:
-            blocks.append(nn.Conv1d(channel, out_channel, 3, padding=1))
+        
+        # For single frames, use simple 1x1 convolutions
+        blocks.extend([
+            nn.Conv1d(channel, channel // 2, 1),  # kernel=1 for single frames
+            nn.ReLU(inplace=True),
+            nn.Conv1d(channel // 2, out_channel, 1),  # kernel=1 for single frames
+        ])
 
         self.blocks = nn.Sequential(*blocks)
 
