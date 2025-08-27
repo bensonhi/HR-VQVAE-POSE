@@ -82,14 +82,13 @@ class Encoder(nn.Module):
         super().__init__()
         if stride == 8:
             blocks = [
-                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1),
+                nn.Conv2d(in_channel, channel // 4, 4, stride=2, padding=1),  # 256->128
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 2, channel, 4, stride=2, padding=1),
+                nn.Conv2d(channel // 4, channel // 2, 4, stride=2, padding=1),  # 128->64
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel // 2, channel, 4, stride=2, padding=1),  # 64->32
                 nn.ReLU(inplace=True),
                 nn.Conv2d(channel, channel, 3, padding=1),
-                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 2, channel, 3, padding=1),
             ]
 
         elif stride == 4:
@@ -135,12 +134,11 @@ class Decoder(nn.Module):
         if stride == 8:
             blocks.extend(
                 [
-                    nn.ConvTranspose2d(channel, channel // 2, 4, stride=2, padding=1),
+                    nn.ConvTranspose2d(channel, channel // 2, 4, stride=2, padding=1),  # 32->64
                     nn.ReLU(inplace=True),
-                    nn.ConvTranspose2d(
-                        channel // 2, out_channel, 4, stride=2, padding=1
-                    ),
-                    nn.ConvTranspose2d(channel, out_channel, 4, stride=2, padding=1),
+                    nn.ConvTranspose2d(channel // 2, channel // 4, 4, stride=2, padding=1),  # 64->128
+                    nn.ReLU(inplace=True),
+                    nn.ConvTranspose2d(channel // 4, out_channel, 4, stride=2, padding=1),  # 128->256
                 ]
             )
 
@@ -175,7 +173,8 @@ class VQVAE_ML(nn.Module):
             n_res_channel=16,
             embed_dim=16,
             n_level=4,
-            n_embed = 16,
+            n_embed=16,
+            n_embeds=None,  # List of different codebook sizes per layer {8, 64, 512}
             decay=0.80,
             stride=4,
     ):
@@ -188,10 +187,19 @@ class VQVAE_ML(nn.Module):
         self.quantizes = nn.ModuleList()
         self.quantizes_conv = nn.ModuleList()
         self.bns = nn.ModuleList()
-        for i in range(n_level):
-            self.quantizes.append(Quantize(embed_dim, n_embed))
-            self.quantizes_conv.append(nn.Conv2d(embed_dim, embed_dim, 1))
-            self.bns.append(nn.BatchNorm2d(embed_dim))
+        # Use different codebook sizes per layer if provided (for paper's {8, 64, 512} specification)
+        if n_embeds is not None:
+            assert len(n_embeds) == n_level, f"n_embeds length {len(n_embeds)} must match n_level {n_level}"
+            for i in range(n_level):
+                self.quantizes.append(Quantize(embed_dim, n_embeds[i], decay=decay))
+                self.quantizes_conv.append(nn.Conv2d(embed_dim, embed_dim, 1))
+                self.bns.append(nn.BatchNorm2d(embed_dim))
+        else:
+            # Use same codebook size for all layers (backward compatibility)
+            for i in range(n_level):
+                self.quantizes.append(Quantize(embed_dim, n_embed, decay=decay))
+                self.quantizes_conv.append(nn.Conv2d(embed_dim, embed_dim, 1))
+                self.bns.append(nn.BatchNorm2d(embed_dim))
         # self.quantizes = Quantize(embed_dim, n_embed,decay=decay)
         # self.dec_t = Decoder(
         #     embed_dim, embed_dim, channel, n_res_block, n_res_channel, stride=2
