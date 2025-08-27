@@ -25,17 +25,28 @@ def model_option_parser(model_type, conf_path):
             'attention': model.getboolean('attention')
         }
     elif model_type == 'vqvae':
-        return {
+        options = {
             'in_channel': model.getint('in_channel'),
             'channel': model.getint('channel'),
             'n_res_block': model.getint('n_res_block'),
             'n_res_channel': model.getint('n_res_channel'),
             'embed_dim': model.getint('embed_dim'),
             'n_level': model.getint('n_level'),
-            'n_embed': model.getint('n_embed'),
             'decay': model.getfloat('decay'),
             'stride': model.getint('stride'),
         }
+        
+        # Check if we have per-layer codebook sizes (for paper's {8, 64, 512} specification)
+        if 'n_embed_layer1' in model:
+            n_embeds = []
+            for i in range(options['n_level']):
+                n_embeds.append(model.getint(f'n_embed_layer{i+1}'))
+            options['n_embeds'] = n_embeds
+        else:
+            # Fallback to single n_embed for all layers (backward compatibility)
+            options['n_embed'] = model.getint('n_embed')
+        
+        return options
     elif model_type == 'vqvae_1':
         return {
             'in_channel': model.getint('in_channel'),

@@ -187,6 +187,7 @@ class VQVAE_Pose_ML(nn.Module):
             embed_dim=64,
             n_level=4,
             n_embed=512,
+            n_embeds=None,  # List of different codebook sizes per layer {8, 64, 512}
             decay=0.99,
             stride=4,
     ):
@@ -203,10 +204,19 @@ class VQVAE_Pose_ML(nn.Module):
         self.quantizes_conv = nn.ModuleList()
         self.bns = nn.ModuleList()
         
-        for i in range(n_level):
-            self.quantizes.append(Quantize(embed_dim, n_embed))
-            self.quantizes_conv.append(nn.Conv1d(embed_dim, embed_dim, 1))
-            self.bns.append(nn.BatchNorm1d(embed_dim))
+        # Use different codebook sizes per layer if provided (for paper's {8, 64, 512} specification)
+        if n_embeds is not None:
+            assert len(n_embeds) == n_level, f"n_embeds length {len(n_embeds)} must match n_level {n_level}"
+            for i in range(n_level):
+                self.quantizes.append(Quantize(embed_dim, n_embeds[i], decay=decay))
+                self.quantizes_conv.append(nn.Conv1d(embed_dim, embed_dim, 1))
+                self.bns.append(nn.BatchNorm1d(embed_dim))
+        else:
+            # Use same codebook size for all layers (backward compatibility)
+            for i in range(n_level):
+                self.quantizes.append(Quantize(embed_dim, n_embed, decay=decay))
+                self.quantizes_conv.append(nn.Conv1d(embed_dim, embed_dim, 1))
+                self.bns.append(nn.BatchNorm1d(embed_dim))
 
         # Decoder
         self.dec = Decoder(embed_dim, in_channel, channel, n_res_block, n_res_channel, stride=stride)

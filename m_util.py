@@ -50,17 +50,31 @@ def create_model_object(model_type, options):
             decay=options['decay']
         )
     elif model_type == 'vqvae':
-        return VQVAE_Pose_ML(
-            in_channel=options['in_channel'],
-            channel=options['channel'],
-            n_res_block=options['n_res_block'],
-            n_res_channel=options['n_res_channel'],
-            embed_dim=options['embed_dim'],
-            n_level=options['n_level'],
-            n_embed=options['n_embed'],
-            decay=options['decay'],
-            stride=options['stride']
-        )
+        # Handle both single n_embed and per-layer n_embeds for pose models
+        if 'n_embeds' in options:
+            return VQVAE_Pose_ML(
+                in_channel=options['in_channel'],
+                channel=options['channel'],
+                n_res_block=options['n_res_block'],
+                n_res_channel=options['n_res_channel'],
+                embed_dim=options['embed_dim'],
+                n_level=options['n_level'],
+                n_embeds=options['n_embeds'],  # List of codebook sizes {8, 64, 512}
+                decay=options['decay'],
+                stride=options['stride']
+            )
+        else:
+            return VQVAE_Pose_ML(
+                in_channel=options['in_channel'],
+                channel=options['channel'],
+                n_res_block=options['n_res_block'],
+                n_res_channel=options['n_res_channel'],
+                embed_dim=options['embed_dim'],
+                n_level=options['n_level'],
+                n_embed=options['n_embed'],
+                decay=options['decay'],
+                stride=options['stride']
+            )
 
 
 def get_model_type(folder_name):
