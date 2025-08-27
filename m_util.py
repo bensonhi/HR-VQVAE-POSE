@@ -2,13 +2,13 @@ import sys
 sys.path.append('../')
 import torch
 from m_vqvae import VQVAE_1
-from image.vqvae import VQVAE
+from m_vqvae_multi_level import VQVAE_ML
 from image.pixelsnail import PixelSNAIL
 from m_conf_parser import model_option_parser, training_params_parser
 
 
 def get_sample_dir(dataset, n_run):
-    return '../checkpoint/{}/{}/sample'.format(*[dataset, n_run])
+    return 'checkpoint/{}/{}/sample'.format(*[dataset, n_run])
 
 
 def load_part(model, checkpoint, device):
@@ -49,14 +49,16 @@ def create_model_object(model_type, options):
             decay=options['decay']
         )
     elif model_type == 'vqvae':
-        return VQVAE(
+        return VQVAE_ML(
             in_channel=options['in_channel'],
             channel=options['channel'],
             n_res_block=options['n_res_block'],
             n_res_channel=options['n_res_channel'],
             embed_dim=options['embed_dim'],
+            n_level=options['n_level'],
             n_embed=options['n_embed'],
-            decay=options['decay']
+            decay=options['decay'],
+            stride=options['stride']
         )
 
 
@@ -73,7 +75,7 @@ def get_path(dataset_name, run_num, folder_name, file_type, checkpoint=0):
     checkpoint = '{}'.format(str(checkpoint).zfill(3))
     model_type = get_model_type(folder_name)
 
-    file_path = '../checkpoint/{}/{}/{}/'.format(*[dataset_name, run_num, model_type])
+    file_path = 'checkpoint/{}/{}/{}/'.format(*[dataset_name, run_num, model_type])
     if model_type == 'pixelsnail':
         file_path += '{}/'.format(folder_name)
 
@@ -86,7 +88,7 @@ def get_path(dataset_name, run_num, folder_name, file_type, checkpoint=0):
 
 def get_runtime_sampler_path(folder_name, dataset_name, run_num, epoch):
     model_type = get_model_type(folder_name)
-    file_path = '../checkpoint/{}/{}/{}/'.format(*[dataset_name, run_num, model_type])
+    file_path = 'checkpoint/{}/{}/{}/'.format(*[dataset_name, run_num, model_type])
     if model_type == 'pixelsnail':
         file_path += '{}/'.format(folder_name)
     file_path += 'runtime_samples/{}'.format(*[str(epoch + 1).zfill(5)])

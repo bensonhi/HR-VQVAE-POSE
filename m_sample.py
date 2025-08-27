@@ -6,22 +6,23 @@ import torch
 from torchvision.utils import save_image
 from m_util import get_runtime_sampler_path
 from torchvision import utils
-from sample import sample_model
+# from sample import sample_model
 
 
 @torch.no_grad()
 def vqvae_sampler(folder_name, model, imgs, dataset_name, run_num, epoch, batch_size):
+    import os
     path = get_runtime_sampler_path(folder_name, dataset_name, run_num, epoch)
-
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    
     with torch.no_grad():
         out, _ = model(imgs)
 
     utils.save_image(
         torch.cat([imgs, out], 0),
-        path,
+        path + '.png',
         nrow=batch_size,
         normalize=True,
-        range=(-1, 1),
     )
 
 
