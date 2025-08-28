@@ -2,6 +2,7 @@ from m_trainer import train
 from m_data_loader import get_lmdb_pixel_loader, get_image_loader
 from m_preprocessing import get_mnist_transform, get_imagenet_transform, get_ffhq_transform
 from m_sample import vqvae_sampler
+from m_util import conf_parser
 import os
 
 # FFHQ Dataset Configuration
@@ -37,14 +38,17 @@ elif folder_name == 'vqvae_1':
     loader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=0)
 
 elif folder_name == 'vqvae':
-    # Create FFHQ data loader
+    # Load configuration parameters first
+    model_options, train_params = conf_parser(dataset_name, n_run, folder_name)
+    
+    # Create FFHQ data loader using config batch size
     transform = get_ffhq_transform(size=size)
     loader = get_image_loader(
         dataset_path=ffhq_dataset_path,
-        batch_size=32,  # Will be overridden by config if batch_size=-1
+        batch_size=train_params['batch'],  # Use batch=32 from conf.ini
         transform=transform,
         shuffle=True,
-        num_workers=0  # Set to 0 for Windows compatibility
+        num_workers=8   # Optimized for 13-core machine
     )
     
 

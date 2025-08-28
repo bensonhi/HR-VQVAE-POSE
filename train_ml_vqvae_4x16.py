@@ -103,7 +103,7 @@ path = "path to the lmdb folder"
 lmdb_path = path + 'name of the lmdb file'
 dataset = lmdb_ffhq(lmdb_path)
 in_channel = 3
-loader = video_mnist_dataloader(dataset, batch_size, shuffle=True, num_workers=4, drop_last=True)
+loader = video_mnist_dataloader(dataset, batch_size, shuffle=True, num_workers=8, drop_last=True)
 
 model = VQVAE_ML(
             in_channel=in_channel,

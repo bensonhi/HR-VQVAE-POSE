@@ -22,8 +22,16 @@ def get_lmdb_loader(dataset_path, n_run, batch_size, shuffle=True, num_workers=4
     return loader
 
 
-def get_image_loader(dataset_path, batch_size, transform, shuffle=True, num_workers=4):
+def get_image_loader(dataset_path, batch_size, transform, shuffle=True, num_workers=8):
     dataset = datasets.ImageFolder(dataset_path, transform=transform)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    loader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=shuffle, 
+        num_workers=num_workers,
+        pin_memory=True,           # Faster GPU transfer
+        persistent_workers=True,   # Keep workers alive between epochs
+        prefetch_factor=2          # Prefetch 2 batches per worker
+    )
     return loader
 

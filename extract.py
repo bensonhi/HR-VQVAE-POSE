@@ -75,7 +75,7 @@ plt.show()
 sample_size = 20
 dataset_lmdb = MnistVideoCodeLMDBDataset(lamda_name,sample_size)
 subset = torch.utils.data.Subset(dataset_lmdb, [0])
-testloader_subset  = torch.utils.data.DataLoader(subset, batch_size=sample_size, num_workers=0, shuffle=False)
+testloader_subset  = torch.utils.data.DataLoader(subset, batch_size=sample_size, num_workers=8, shuffle=False, pin_memory=True)
 
 torch.backends.cudnn.enabled = False
 

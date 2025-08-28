@@ -228,16 +228,13 @@ class VQVAE_ML(nn.Module):
     def encode(self, input):
         enc = self.enc(input)
 
-        bottleneck = self.quantize_conv(enc)
+        residual = self.quantize_conv(enc)
         ids = None
         quants = None
         diffs = None
         quant_sum = None
         for i,quantize in enumerate(self.quantizes):
-            # print('bottleneck shape'.format(bottleneck.shape))
-            quant, diff, id = quantize(bottleneck.permute(0, 2, 3, 1))
-            # print(bottleneck.shape)
-            # print(quant.shape)
+            quant, diff, id = quantize(residual.permute(0, 2, 3, 1))
             quant = quant.permute(0, 3, 1, 2)
             diff = diff.unsqueeze(0)
 
@@ -251,8 +248,7 @@ class VQVAE_ML(nn.Module):
                 quant_sum += quant
                 quants = torch.cat((quants,quant.unsqueeze(1)),dim=1)
                 ids = torch.cat((ids, id.unsqueeze(1)), dim=1)
-            bottleneck -= quant
-            # bottleneck = F.relu(self.bns[i](self.quantizes_conv[i](bottleneck)))
+            residual = residual - quant
         return quant_sum, diffs, quants, ids
 
     def decode(self, quant):
