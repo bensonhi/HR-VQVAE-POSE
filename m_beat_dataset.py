@@ -13,7 +13,7 @@ class BEAT2PoseDataset(Dataset):
                  sequence_length: int = 120,
                  stride: int = 30,
                  pose_dims: int = 165,
-                 normalize: bool = True):
+                 normalize: bool = False):
         """
         BEAT2 Pose Sequence Dataset
         
@@ -97,7 +97,7 @@ class BEAT2PoseDataset(Dataset):
         for file_path in self.pose_files:
             try:
                 data = np.load(file_path)
-                poses = data['poses']  # Shape: (T, 165)
+                poses = data['joints']  # Shape: (T, num_joints, 3) - use joint positions instead
                 
                 if len(poses) < self.sequence_length:
                     continue
@@ -105,9 +105,9 @@ class BEAT2PoseDataset(Dataset):
                 # Extract sequences with stride
                 for i in range(0, len(poses) - self.sequence_length + 1, self.stride):
                     sequence = poses[i:i + self.sequence_length]
-                    if self.normalize:
-                        sequence = self._normalize_sequence(sequence)
-                    self.sequences.append(sequence)
+                    # Flatten joint positions: (seq_len, num_joints, 3) -> (seq_len, num_joints*3)
+                    sequence = sequence.reshape(sequence.shape[0], -1)
+                    self.sequences.append(sequence.astype(np.float32))
                     
             except Exception as e:
                 print(f"Error loading {file_path}: {e}")

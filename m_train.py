@@ -40,7 +40,7 @@ elif folder_name == 'vqvae_1':
 elif folder_name == 'vqvae':
     from m_beat_dataset import get_beat_pose_loader
     loader = get_beat_pose_loader(
-        data_path='BEAT2',
+        data_path='BEAT2_joints_vertices',
         language='english',
         batch_size=32, 
         sequence_length=1,
