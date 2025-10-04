@@ -88,9 +88,8 @@ def joints_to_smplx_params_simple(joints_3d, smplx_model, beat2_params=None, dev
             params[key] = value.clone().to(device)
 
         # Adjust translation to match joint positions
-        joints_centered = joints_3d - joints_3d.mean(axis=0)
-        target_center = torch.tensor(joints_centered.mean(axis=0)).float().to(device)
-        params['transl'] = target_center.reshape(1, 3)
+        joints_center = joints_3d.mean(axis=0)
+        params['transl'] = torch.tensor(joints_center).reshape(1, 3).float().to(device)
 
         return params
     else:
@@ -172,6 +171,73 @@ def plot_avatar_mesh(ax, vertices, joints, faces, plot_joints=True, title="", co
     ax.set_zlabel('Z')
 
 
+def visualize_with_pyrender(model, original_params, reconstructed_params, args):
+    """Create interactive visualization using PyRender (like the official example)"""
+    try:
+        import pyrender
+        import trimesh
+        
+        print("Generating mesh data for PyRender...")
+        orig_vertices, orig_joints = generate_mesh_data(model, original_params, "Original")
+        recon_vertices, recon_joints = generate_mesh_data(model, reconstructed_params, "Reconstructed")
+        
+        if orig_vertices is None or recon_vertices is None:
+            print("Failed to generate mesh data")
+            return
+        
+        # Create scene
+        scene = pyrender.Scene()
+        
+        # Add original mesh (left side, blue)
+        vertex_colors_orig = np.ones([orig_vertices.shape[0], 4]) * [0.3, 0.3, 0.8, 0.8]
+        tri_mesh_orig = trimesh.Trimesh(
+            vertices=orig_vertices - np.array([1.0, 0, 0]),  # Offset left
+            faces=model.faces,
+            vertex_colors=vertex_colors_orig
+        )
+        mesh_orig = pyrender.Mesh.from_trimesh(tri_mesh_orig)
+        scene.add(mesh_orig, name='Original')
+        
+        # Add reconstructed mesh (right side, red)
+        vertex_colors_recon = np.ones([recon_vertices.shape[0], 4]) * [0.8, 0.3, 0.3, 0.8]
+        tri_mesh_recon = trimesh.Trimesh(
+            vertices=recon_vertices + np.array([1.0, 0, 0]),  # Offset right
+            faces=model.faces,
+            vertex_colors=vertex_colors_recon
+        )
+        mesh_recon = pyrender.Mesh.from_trimesh(tri_mesh_recon)
+        scene.add(mesh_recon, name='Reconstructed')
+        
+        # Add joint spheres if requested
+        if args.plot_joints:
+            # Original joints (blue)
+            sm = trimesh.creation.uv_sphere(radius=0.01)
+            sm.visual.vertex_colors = [0.1, 0.1, 0.9, 1.0]
+            tfs = np.tile(np.eye(4), (len(orig_joints), 1, 1))
+            tfs[:, :3, 3] = orig_joints - np.array([1.0, 0, 0])
+            joints_pcl_orig = pyrender.Mesh.from_trimesh(sm, poses=tfs)
+            scene.add(joints_pcl_orig, name='Original Joints')
+            
+            # Reconstructed joints (red)
+            sm = trimesh.creation.uv_sphere(radius=0.01)
+            sm.visual.vertex_colors = [0.9, 0.1, 0.1, 1.0]
+            tfs = np.tile(np.eye(4), (len(recon_joints), 1, 1))
+            tfs[:, :3, 3] = recon_joints + np.array([1.0, 0, 0])
+            joints_pcl_recon = pyrender.Mesh.from_trimesh(sm, poses=tfs)
+            scene.add(joints_pcl_recon, name='Reconstructed Joints')
+        
+        print("Launching interactive PyRender viewer...")
+        print("Left (Blue): Original | Right (Red): Reconstructed")
+        pyrender.Viewer(scene, use_raymond_lighting=True)
+        
+    except ImportError:
+        print("PyRender not available. Falling back to matplotlib...")
+        visualize_side_by_side_comparison(model, original_params, reconstructed_params, args, None)
+    except Exception as e:
+        print(f"Error with PyRender: {e}")
+        visualize_side_by_side_comparison(model, original_params, reconstructed_params, args, None)
+
+
 def visualize_side_by_side_comparison(model, original_params, reconstructed_params, args, save_path=None):
     """Create TRUE side-by-side comparison with actual meshes"""
 
@@ -244,6 +310,8 @@ def main():
                         help='Directory to save visualization images')
     parser.add_argument('--device', default='cpu', type=str,
                         help='Device for SMPL-X computations')
+    parser.add_argument('--interactive', action='store_true',
+                        help='Use interactive PyRender viewer instead of matplotlib')
 
     args = parser.parse_args()
 
@@ -327,9 +395,13 @@ def main():
         os.makedirs(args.output_dir, exist_ok=True)
         save_path = os.path.join(args.output_dir, f"side_by_side_comparison_sample{idx}_batch{args.batch_idx}_frame{args.frame_idx}.png")
 
-    # Create TRUE side-by-side visualization with actual meshes
-    print("\n=== Creating Side-by-Side Mesh Visualization ===")
-    visualize_side_by_side_comparison(model, original_params, reconstructed_params, args, save_path)
+    # Create visualization
+    if args.interactive and not args.save_images:
+        print("\n=== Creating Interactive Mesh Visualization ===")
+        visualize_with_pyrender(model, original_params, reconstructed_params, args)
+    else:
+        print("\n=== Creating Side-by-Side Mesh Visualization ===")
+        visualize_side_by_side_comparison(model, original_params, reconstructed_params, args, save_path)
 
 
 if __name__ == '__main__':
