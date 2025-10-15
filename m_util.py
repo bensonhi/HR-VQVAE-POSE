@@ -47,7 +47,9 @@ def create_model_object(model_type, options):
             n_res_channel=options['n_res_channel'],
             embed_dim=options['embed_dim'],
             n_embed=options['n_embed'],
-            decay=options['decay']
+            decay=options['decay'],
+            use_smplx=options.get('use_smplx', False),
+            smplx_model_path=options.get('smplx_model_path', 'models_smplx_v1_1/models')
         )
     elif model_type == 'vqvae':
         # Handle both single n_embed and per-layer n_embeds for pose models
@@ -61,7 +63,9 @@ def create_model_object(model_type, options):
                 n_level=options['n_level'],
                 n_embeds=options['n_embeds'],  # List of codebook sizes {8, 64, 512}
                 decay=options['decay'],
-                stride=options['stride']
+                stride=options['stride'],
+                use_smplx=options.get('use_smplx', False),
+                smplx_model_path=options.get('smplx_model_path', 'models_smplx_v1_1/models')
             )
         else:
             return VQVAE_Pose_ML(
@@ -73,7 +77,9 @@ def create_model_object(model_type, options):
                 n_level=options['n_level'],
                 n_embed=options['n_embed'],
                 decay=options['decay'],
-                stride=options['stride']
+                stride=options['stride'],
+                use_smplx=options.get('use_smplx', False),
+                smplx_model_path=options.get('smplx_model_path', 'models_smplx_v1_1/models')
             )
 
 
