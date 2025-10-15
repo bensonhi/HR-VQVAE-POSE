@@ -213,17 +213,17 @@ class BEAT2PoseDataset(Dataset):
             if sequence_data.get('compute_gt', False) and self.smplx_model is not None:
                 # Compute vertices and joints from axis-angle poses
                 with torch.no_grad():
-                    # Parse 165D pose into SMPLX parameters
-                    batch_size, seq_len, _ = pose_sequence.shape
-                    pose_flat = pose_sequence.reshape(batch_size * seq_len, 165)
+                    # pose_sequence shape: (seq_len, 165)
+                    seq_len = pose_sequence.shape[0]
 
-                    global_orient = pose_flat[:, :3]
-                    body_pose = pose_flat[:, 3:66]
-                    jaw_pose = pose_flat[:, 66:69]
-                    leye_pose = pose_flat[:, 69:72]
-                    reye_pose = pose_flat[:, 72:75]
-                    left_hand_pose = pose_flat[:, 75:120]
-                    right_hand_pose = pose_flat[:, 120:165]
+                    # Parse 165D pose into SMPLX parameters
+                    global_orient = pose_sequence[:, :3]
+                    body_pose = pose_sequence[:, 3:66]
+                    jaw_pose = pose_sequence[:, 66:69]
+                    leye_pose = pose_sequence[:, 69:72]
+                    reye_pose = pose_sequence[:, 72:75]
+                    left_hand_pose = pose_sequence[:, 75:120]
+                    right_hand_pose = pose_sequence[:, 120:165]
 
                     # SMPLX forward pass
                     output = self.smplx_model(
@@ -234,17 +234,14 @@ class BEAT2PoseDataset(Dataset):
                         reye_pose=reye_pose,
                         left_hand_pose=left_hand_pose,
                         right_hand_pose=right_hand_pose,
-                        betas=torch.zeros(batch_size * seq_len, 10),
-                        expression=torch.zeros(batch_size * seq_len, 10),
+                        betas=torch.zeros(seq_len, 10),
+                        expression=torch.zeros(seq_len, 10),
                         return_verts=True
                     )
 
-                    # Reshape back to (batch, seq_len, ...)
-                    vertices = output.vertices.reshape(batch_size, seq_len, -1, 3)
-                    joints = output.joints.reshape(batch_size, seq_len, -1, 3)
-
-                    ret_dict['gt_vertices'] = vertices.squeeze(0)  # Remove batch dim if single sample
-                    ret_dict['gt_joints'] = joints.squeeze(0)
+                    # Output shape: (seq_len, num_vertices, 3) and (seq_len, num_joints, 3)
+                    ret_dict['gt_vertices'] = output.vertices
+                    ret_dict['gt_joints'] = output.joints
             else:
                 # Use pre-computed GT if available
                 if 'gt_joints' in sequence_data:
