@@ -35,7 +35,7 @@ def model_option_parser(model_type, conf_path):
             'decay': model.getfloat('decay'),
             'stride': model.getint('stride'),
         }
-        
+
         # Check if we have per-layer codebook sizes (for paper's {8, 64, 512} specification)
         if 'n_embed_layer1' in model:
             n_embeds = []
@@ -45,7 +45,13 @@ def model_option_parser(model_type, conf_path):
         else:
             # Fallback to single n_embed for all layers (backward compatibility)
             options['n_embed'] = model.getint('n_embed')
-        
+
+        # Check for SMPLX parameters
+        if 'use_smplx' in model:
+            options['use_smplx'] = model.getboolean('use_smplx')
+            if 'smplx_model_path' in model:
+                options['smplx_model_path'] = model.get('smplx_model_path')
+
         return options
     elif model_type == 'vqvae_1':
         return {

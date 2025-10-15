@@ -42,10 +42,12 @@ elif folder_name == 'vqvae':
     loader = get_beat_pose_loader(
         data_path='BEAT2_joints_vertices',
         language='english',
-        batch_size=32, 
+        batch_size=32,
         sequence_length=1,
         shuffle=True,
-        num_workers=0
+        num_workers=0,
+        use_axis_angle=True,  # Load axis-angle poses (165D)
+        load_gt_geometry=True  # Load ground truth vertices and joints for supervision
     )
 
 train(

@@ -2,6 +2,7 @@ import sys
 import torch
 from torch import nn
 from torch.nn import functional as F
+from m_smplx_layer import SMPLXLayer
 
 sys.path.append('../')
 
@@ -130,6 +131,8 @@ class VQVAE_Pose_1(nn.Module):
             embed_dim=64,
             n_embed=512,
             decay=0.99,
+            use_smplx=False,
+            smplx_model_path='models_smplx_v1_1/models',
     ):
         super().__init__()
 
@@ -145,16 +148,29 @@ class VQVAE_Pose_1(nn.Module):
             stride=4,
         )
 
-    def forward(self, input):
+        # Optional SMPLX layer for geometry supervision
+        self.use_smplx = use_smplx
+        if use_smplx:
+            self.smplx_layer = SMPLXLayer(model_path=smplx_model_path)
+        else:
+            self.smplx_layer = None
+
+    def forward(self, input, compute_geometry=False):
         # Input: (batch, sequence_length, pose_dim)
         # Transpose to (batch, pose_dim, sequence_length) for conv1d
         input = input.transpose(1, 2)
-        
+
         quant, diff, _ = self.encode(input)
         dec = self.decode(quant)
-        
+
         # Transpose back to (batch, sequence_length, pose_dim)
         dec = dec.transpose(1, 2)
+
+        # Optionally compute geometry through SMPLX
+        if compute_geometry and self.use_smplx:
+            vertices, joints = self.smplx_layer(dec)
+            return dec, diff, vertices, joints
+
         return dec, diff
 
     def encode(self, input):
@@ -190,20 +206,22 @@ class VQVAE_Pose_ML(nn.Module):
             n_embeds=None,  # List of different codebook sizes per layer {8, 64, 512}
             decay=0.99,
             stride=4,
+            use_smplx=False,
+            smplx_model_path='models_smplx_v1_1/models',
     ):
         super().__init__()
         self.device = 'cpu'
-        
+
         # Main encoder
         self.enc = Encoder(in_channel, channel, n_res_block, n_res_channel, stride=stride)
         self.quantize_conv = nn.Conv1d(channel, embed_dim, 1)
-        
+
         # Multiple quantization levels
         self.n_level = n_level
         self.quantizes = nn.ModuleList()
         self.quantizes_conv = nn.ModuleList()
         self.bns = nn.ModuleList()
-        
+
         # Use different codebook sizes per layer if provided (for paper's {8, 64, 512} specification)
         if n_embeds is not None:
             assert len(n_embeds) == n_level, f"n_embeds length {len(n_embeds)} must match n_level {n_level}"
@@ -221,40 +239,53 @@ class VQVAE_Pose_ML(nn.Module):
         # Decoder
         self.dec = Decoder(embed_dim, in_channel, channel, n_res_block, n_res_channel, stride=stride)
 
-    def forward(self, input):
+        # Optional SMPLX layer for geometry supervision
+        self.use_smplx = use_smplx
+        if use_smplx:
+            self.smplx_layer = SMPLXLayer(model_path=smplx_model_path)
+        else:
+            self.smplx_layer = None
+
+    def forward(self, input, compute_geometry=False):
         # Input: (batch, sequence_length, pose_dim)
         # Transpose to (batch, pose_dim, sequence_length) for conv1d
         input = input.transpose(1, 2)
-        
+
         quant, diff, _ = self.encode(input)
         dec = self.decode(quant)
-        
+
         # Transpose back to (batch, sequence_length, pose_dim)
         dec = dec.transpose(1, 2)
+
+        # Optionally compute geometry through SMPLX
+        if compute_geometry and self.use_smplx:
+            vertices, joints = self.smplx_layer(dec)
+            return dec, diff, vertices, joints
+
         return dec, diff
 
     def encode(self, input):
         enc = self.enc(input)
         quant = self.quantize_conv(enc)
-        
+
         # Multi-level quantization
         diffs = []
         residual = quant.permute(0, 2, 1)  # (B, T, D)
-        
+
         for i in range(self.n_level):
             quantized, diff, _ = self.quantizes[i](residual)
             diffs.append(diff)
-            
+
             # Update residual (subtract quantized version)
             residual = residual - quantized
-            
+
             if i == 0:  # Use first level as main quantization
                 main_quant = quantized
-        
+
         # Combine all levels
         final_quant = main_quant.permute(0, 2, 1)  # (B, D, T)
         combined_diff = torch.stack(diffs).mean()
-        
+
         return final_quant, combined_diff.unsqueeze(0), None
 
     def decode(self, quant):
@@ -267,7 +298,7 @@ class VQVAE_Pose_ML(nn.Module):
             code = codes[0]
         else:
             code = codes
-            
+
         quant = self.quantizes[0].embed_code(code)
         quant = quant.permute(0, 2, 1)  # (B, D, T)
         dec = self.decode(quant)

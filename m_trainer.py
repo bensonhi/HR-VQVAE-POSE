@@ -91,10 +91,19 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
 
     elif model_type in [VQVAE, VQVAE_1]:
         scheduler = get_scheduler(lr, end_epoch - start_epoch, sched, optimizer, loader)
+
+        # Check if model has SMPLX capability
+        use_smplx_loss = False
+        if hasattr(model, 'module'):  # DataParallel wrapper
+            use_smplx_loss = hasattr(model.module, 'use_smplx') and model.module.use_smplx
+        elif hasattr(model, 'use_smplx'):
+            use_smplx_loss = model.use_smplx
+
         for i in range(start_epoch, end_epoch):
             sample_iter += 1
             do_sample = sample_period > 0 and sample_iter % sample_period ==0
 
-            train_vqvae(folder_name, i, loader, model,writer , do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run)
+            train_vqvae(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
+                       use_smplx_loss=use_smplx_loss)
             save_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
             torch.save(model.state_dict(), save_path)

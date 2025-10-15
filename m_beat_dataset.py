@@ -7,23 +7,27 @@ from typing import Optional, Union
 
 
 class BEAT2PoseDataset(Dataset):
-    def __init__(self, 
-                 data_path: str, 
+    def __init__(self,
+                 data_path: str,
                  language: str = 'english',
                  sequence_length: int = 120,
                  stride: int = 30,
                  pose_dims: int = 165,
-                 normalize: bool = False):
+                 normalize: bool = False,
+                 use_axis_angle: bool = False,
+                 load_gt_geometry: bool = False):
         """
         BEAT2 Pose Sequence Dataset
-        
+
         Args:
             data_path: Path to BEAT2 directory
-            language: Language subset ('english', 'chinese', 'spanish', 'japanese')  
+            language: Language subset ('english', 'chinese', 'spanish', 'japanese')
             sequence_length: Length of pose sequences to extract
             stride: Stride between sequences
-            pose_dims: Dimension of pose data (165 for SMPLX poses)
+            pose_dims: Dimension of pose data (165 for SMPLX axis-angle, 381 for joints)
             normalize: Whether to normalize pose data
+            use_axis_angle: If True, load axis-angle poses (165D). If False, load joint positions (381D)
+            load_gt_geometry: If True, also load ground truth vertices and joints for supervision
         """
         self.data_path = data_path
         self.language = language
@@ -31,6 +35,8 @@ class BEAT2PoseDataset(Dataset):
         self.stride = stride
         self.pose_dims = pose_dims
         self.normalize = normalize
+        self.use_axis_angle = use_axis_angle
+        self.load_gt_geometry = load_gt_geometry
         
         # Determine the correct language folder
         lang_folders = {
@@ -97,18 +103,44 @@ class BEAT2PoseDataset(Dataset):
         for file_path in self.pose_files:
             try:
                 data = np.load(file_path)
-                poses = data['joints']  # Shape: (T, num_joints, 3) - use joint positions instead
-                
+
+                # Choose between axis-angle poses or joint positions
+                if self.use_axis_angle:
+                    poses = data['poses']  # Shape: (T, 165) - axis-angle representation
+                else:
+                    poses = data['joints']  # Shape: (T, num_joints, 3) - joint positions
+
                 if len(poses) < self.sequence_length:
                     continue
-                
+
+                # Load ground truth geometry if needed for supervision
+                gt_joints = data['joints'] if self.load_gt_geometry and 'joints' in data else None
+                gt_vertices = data['vertices'] if self.load_gt_geometry and 'vertices' in data else None
+
                 # Extract sequences with stride
                 for i in range(0, len(poses) - self.sequence_length + 1, self.stride):
                     sequence = poses[i:i + self.sequence_length]
-                    # Flatten joint positions: (seq_len, num_joints, 3) -> (seq_len, num_joints*3)
-                    sequence = sequence.reshape(sequence.shape[0], -1)
-                    self.sequences.append(sequence.astype(np.float32))
-                    
+
+                    # Flatten if needed
+                    if sequence.ndim > 2:
+                        # Joint positions: (seq_len, num_joints, 3) -> (seq_len, num_joints*3)
+                        sequence = sequence.reshape(sequence.shape[0], -1)
+
+                    sequence_data = {
+                        'poses': sequence.astype(np.float32)
+                    }
+
+                    # Add ground truth geometry if available
+                    if self.load_gt_geometry:
+                        if gt_joints is not None:
+                            gt_joints_seq = gt_joints[i:i + self.sequence_length]
+                            sequence_data['gt_joints'] = gt_joints_seq.astype(np.float32)
+                        if gt_vertices is not None:
+                            gt_vertices_seq = gt_vertices[i:i + self.sequence_length]
+                            sequence_data['gt_vertices'] = gt_vertices_seq.astype(np.float32)
+
+                    self.sequences.append(sequence_data)
+
             except Exception as e:
                 print(f"Error loading {file_path}: {e}")
                 continue
@@ -125,28 +157,47 @@ class BEAT2PoseDataset(Dataset):
         return len(self.sequences)
     
     def __getitem__(self, idx):
-        sequence = self.sequences[idx]
-        # Return as tensor with shape (sequence_length, pose_dims)
-        return torch.FloatTensor(sequence), torch.zeros(1)  # dummy label for compatibility
+        sequence_data = self.sequences[idx]
+
+        if isinstance(sequence_data, dict):
+            # New format with ground truth geometry
+            pose_sequence = torch.FloatTensor(sequence_data['poses'])
+
+            # Prepare return dict
+            ret_dict = {'poses': pose_sequence}
+
+            if 'gt_joints' in sequence_data:
+                ret_dict['gt_joints'] = torch.FloatTensor(sequence_data['gt_joints'])
+            if 'gt_vertices' in sequence_data:
+                ret_dict['gt_vertices'] = torch.FloatTensor(sequence_data['gt_vertices'])
+
+            return ret_dict, torch.zeros(1)  # dummy label for compatibility
+        else:
+            # Legacy format (backward compatibility)
+            return torch.FloatTensor(sequence_data), torch.zeros(1)
 
 
-def get_beat_pose_loader(data_path: str, 
+def get_beat_pose_loader(data_path: str,
                         language: str = 'chinese',
                         batch_size: int = 32,
-                        sequence_length: int = 120, 
+                        sequence_length: int = 120,
                         shuffle: bool = True,
-                        num_workers: int = 0):
+                        num_workers: int = 0,
+                        use_axis_angle: bool = False,
+                        load_gt_geometry: bool = False):
     """Create a DataLoader for BEAT2 pose sequences"""
     dataset = BEAT2PoseDataset(
         data_path=data_path,
-        language=language, 
-        sequence_length=sequence_length
+        language=language,
+        sequence_length=sequence_length,
+        use_axis_angle=use_axis_angle,
+        load_gt_geometry=load_gt_geometry
     )
-    
+
     from torch.utils.data import DataLoader
     return DataLoader(
-        dataset, 
+        dataset,
         batch_size=batch_size,
-        shuffle=shuffle, 
+        shuffle=shuffle,
         num_workers=num_workers
     )
