@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import Dataset
 import glob
 from typing import Optional, Union
+from tqdm import tqdm
 
 
 class BEAT2PoseDataset(Dataset):
@@ -66,7 +67,8 @@ class BEAT2PoseDataset(Dataset):
     
     def _load_semantic_sequences(self):
         """Load semantic feature sequences for English"""
-        for file_path in self.pose_files:
+        print(f"Loading semantic sequences from {len(self.pose_files)} files...")
+        for file_path in tqdm(self.pose_files, desc="Loading files"):
             try:
                 # Read semantic features (assume they're text files with numerical data)
                 with open(file_path, 'r') as f:
@@ -100,7 +102,8 @@ class BEAT2PoseDataset(Dataset):
     
     def _load_pose_sequences(self):
         """Load actual pose sequences"""
-        for file_path in self.pose_files:
+        print(f"Loading semantic sequences from {len(self.pose_files)} files...")
+        for file_path in tqdm(self.pose_files, desc="Loading files"):
             try:
                 data = np.load(file_path)
 
@@ -199,5 +202,6 @@ def get_beat_pose_loader(data_path: str,
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
-        num_workers=num_workers
+        num_workers=num_workers,
+        pin_memory=True  # Faster CPU-to-GPU transfer
     )

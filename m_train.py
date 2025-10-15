@@ -45,7 +45,7 @@ elif folder_name == 'vqvae':
         batch_size=32,
         sequence_length=1,
         shuffle=True,
-        num_workers=0,
+        num_workers=8,  # Parallel data loading (optimal for 13 CPUs)
         use_axis_angle=True,  # Load axis-angle poses (165D)
         load_gt_geometry=True  # Load ground truth vertices and joints for supervision
     )
