@@ -104,6 +104,9 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
             do_sample = sample_period > 0 and sample_iter % sample_period ==0
 
             train_vqvae(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
-                       use_smplx_loss=use_smplx_loss)
+                       use_smplx_loss=use_smplx_loss,
+                       pose_loss_weight=1.0,
+                       vertex_loss_weight=5.0,
+                       joint_loss_weight=3.0)
             save_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
             torch.save(model.state_dict(), save_path)
