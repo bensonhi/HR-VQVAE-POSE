@@ -40,14 +40,16 @@ elif folder_name == 'vqvae_1':
 elif folder_name == 'vqvae':
     from m_beat_dataset import get_beat_pose_loader
     loader = get_beat_pose_loader(
-        data_path='BEAT2_joints_vertices',
+        data_path='BEAT2_joints_vertices',  # Has both poses and pre-computed GT
         language='english',
         batch_size=32,
         sequence_length=1,
         shuffle=True,
         num_workers=8,  # Parallel data loading (optimal for 13 CPUs)
         use_axis_angle=True,  # Load axis-angle poses (165D)
-        load_gt_geometry=True  # Load ground truth vertices and joints for supervision
+        load_gt_geometry=True,  # Load ground truth vertices and joints for supervision
+        compute_gt_on_fly=True,  # Compute GT on-the-fly from poses using SMPLX
+        smplx_model_path='models_smplx_v1_1/models'
     )
 
 train(
