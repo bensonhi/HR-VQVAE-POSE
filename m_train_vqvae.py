@@ -131,8 +131,13 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
         desc += (
             f'latent: {latent_loss.item():.3f}; '
             f'avg_pose: {pose_mse_sum / mse_n:.5f}; '
-            f'lr: {lr:.5f}'
         )
+        if use_smplx_loss:
+            desc += (
+                f'avg_vert: {vertex_mse_sum / mse_n:.5f}; '
+                f'avg_joint: {joint_mse_sum / mse_n:.5f}; '
+            )
+        desc += f'lr: {lr:.5f}'
         loader.set_description(desc)
 
     # Log to TensorBoard
