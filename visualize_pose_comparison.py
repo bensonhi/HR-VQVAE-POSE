@@ -151,7 +151,7 @@ def main():
                         type=str, help='Path to runtime samples directory')
     parser.add_argument('--sample-idx', default=-1, type=int,
                         help='Which sample to visualize (-1 for latest, 0-based index)')
-    parser.add_argument('--frame-idx', default=0, type=int,
+    parser.add_argument('--frame-idx', default=2, type=int,
                         help='Which frame in the sequence to visualize (0-based index)')
     parser.add_argument('--gender', default='neutral', type=str,
                         help='SMPL-X model gender')
@@ -275,15 +275,10 @@ def main():
             print(f"Using real BEAT2 pose as original comparison")
     
     if not args.use_real_beat2:
-        # Use consistent denormalization method
-        pose_min = -3.14159
-        pose_max = 3.14159
-        original_denorm = denormalize_poses(original_frame, pose_min, pose_max)
-        reconstructed_denorm = denormalize_poses(reconstructed_frame, pose_min, pose_max)
-        
-        print(f"After denormalization - Original: min={original_denorm.min():.3f}, max={original_denorm.max():.3f}")
-        print(f"After denormalization - Reconstructed: min={reconstructed_denorm.min():.3f}, max={reconstructed_denorm.max():.3f}")
-    
+        print("Data appears to be in raw radians (not normalized), using directly")
+        original_denorm = original_frame
+        reconstructed_denorm = reconstructed_frame
+
     # Convert to SMPL-X parameters
     original_params = pose_to_smplx_params(original_denorm)
     reconstructed_params = pose_to_smplx_params(reconstructed_denorm)
