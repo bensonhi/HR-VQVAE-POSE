@@ -295,6 +295,46 @@ class VQVAE_Pose_ML(nn.Module):
         dec = self.dec(quant)
         return dec
 
+    def decode_partial_levels(self, input, num_levels=None):
+        """
+        Encode and decode using only the first num_levels quantization levels.
+        This allows visualizing what each level learns.
+
+        Args:
+            input: Input tensor (batch, pose_dim, sequence_length) in conv1d format
+            num_levels: Number of levels to use (1 to n_level). If None, uses all levels.
+
+        Returns:
+            dec: Decoded output (batch, sequence_length, pose_dim)
+            diff: Quantization loss
+        """
+        if num_levels is None:
+            num_levels = self.n_level
+
+        num_levels = min(num_levels, self.n_level)
+
+        enc = self.enc(input)
+        quant = self.quantize_conv(enc)
+
+        # Multi-level hierarchical residual quantization (up to num_levels)
+        diffs = []
+        residual = quant.permute(0, 2, 1)  # (B, T, D)
+        accumulated_quant = torch.zeros_like(residual)
+
+        for i in range(num_levels):
+            quantized, diff, id = self.quantizes[i](residual)
+            diffs.append(diff)
+            accumulated_quant = accumulated_quant + quantized
+            residual = residual - quantized
+
+        final_quant = accumulated_quant.permute(0, 2, 1)  # (B, D, T)
+        combined_diff = torch.stack(diffs).mean()
+
+        dec = self.decode(final_quant)
+        dec = dec.transpose(1, 2)  # (B, T, pose_dim)
+
+        return dec, combined_diff.unsqueeze(0)
+
     def decode_code(self, codes):
         """
         Decode from hierarchical codes.
