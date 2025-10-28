@@ -145,7 +145,7 @@ def visualize_pose(model, pose_params, plotting_module='pyrender', plot_joints=T
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize HR-VQVAE pose reconstruction comparison')
-    parser.add_argument('--model-folder', required=True, type=str,
+    parser.add_argument('--model-folder', default='models_smplx_v1_1/models', type=str,
                         help='Path to SMPL-X model folder')
     parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vqvae/runtime_samples', 
                         type=str, help='Path to runtime samples directory')
