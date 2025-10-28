@@ -34,10 +34,10 @@ class Quantize(nn.Module):
 
         if self.training:
             self.cluster_size.data.mul_(self.decay).add_(
-                1 - self.decay, embed_onehot.sum(0)
+                embed_onehot.sum(0), alpha=1 - self.decay
             )
             embed_sum = flatten.transpose(0, 1) @ embed_onehot
-            self.embed_avg.data.mul_(self.decay).add_(1 - self.decay, embed_sum)
+            self.embed_avg.data.mul_(self.decay).add_(embed_sum, alpha=1 - self.decay)
             n = self.cluster_size.sum()
             cluster_size = (
                     (self.cluster_size + self.eps) / (n + self.n_embed * self.eps) * n
@@ -236,39 +236,57 @@ class VQVAE_Pose_ML(nn.Module):
     def encode(self, input):
         enc = self.enc(input)
         quant = self.quantize_conv(enc)
-        
-        # Multi-level quantization
+
+        # Multi-level hierarchical residual quantization
         diffs = []
+        ids = []
         residual = quant.permute(0, 2, 1)  # (B, T, D)
-        
+        accumulated_quant = torch.zeros_like(residual)  # Accumulate all levels
+
         for i in range(self.n_level):
-            quantized, diff, _ = self.quantizes[i](residual)
+            quantized, diff, id = self.quantizes[i](residual)
             diffs.append(diff)
-            
-            # Update residual (subtract quantized version)
+            ids.append(id)
+
+            # Accumulate quantized values (hierarchical residual learning)
+            accumulated_quant = accumulated_quant + quantized
+
+            # Update residual (subtract quantized version for next level)
             residual = residual - quantized
-            
-            if i == 0:  # Use first level as main quantization
-                main_quant = quantized
-        
-        # Combine all levels
-        final_quant = main_quant.permute(0, 2, 1)  # (B, D, T)
+
+        # Use accumulated quantization from all levels
+        final_quant = accumulated_quant.permute(0, 2, 1)  # (B, D, T)
         combined_diff = torch.stack(diffs).mean()
-        
-        return final_quant, combined_diff.unsqueeze(0), None
+
+        return final_quant, combined_diff.unsqueeze(0), ids
 
     def decode(self, quant):
         dec = self.dec(quant)
         return dec
 
     def decode_code(self, codes):
-        # For compatibility - use first code
-        if isinstance(codes, list):
-            code = codes[0]
-        else:
+        """
+        Decode from hierarchical codes.
+        Args:
+            codes: List of code tensors [code_L1, code_L2, ..., code_Ln] or single code tensor
+        """
+        if not isinstance(codes, list):
+            # Backward compatibility - single code uses only first level
             code = codes
-            
-        quant = self.quantizes[0].embed_code(code)
-        quant = quant.permute(0, 2, 1)  # (B, D, T)
+            quant = self.quantizes[0].embed_code(code)
+            quant = quant.permute(0, 2, 1)  # (B, D, T)
+        else:
+            # Hierarchical decoding - accumulate all levels
+            accumulated_quant = None
+            for i, code in enumerate(codes):
+                if i >= self.n_level:
+                    break
+                level_quant = self.quantizes[i].embed_code(code)  # (B, T, D)
+                if accumulated_quant is None:
+                    accumulated_quant = level_quant
+                else:
+                    accumulated_quant = accumulated_quant + level_quant
+            quant = accumulated_quant.permute(0, 2, 1)  # (B, D, T)
+
         dec = self.decode(quant)
         return dec.transpose(1, 2)
