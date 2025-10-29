@@ -8,16 +8,24 @@ def load_runtime_samples(samples_dir):
     """Load all runtime samples from the directory"""
     sample_files = [f for f in os.listdir(samples_dir) if f.endswith('.npz')]
     sample_files.sort()
-    
+
     samples = []
     for filename in sample_files:
         filepath = os.path.join(samples_dir, filename)
         data = np.load(filepath)
-        samples.append({
+
+        sample_data = {
             'filename': filename,
             'original': data['original'],
             'reconstructed': data['reconstructed']
-        })
+        }
+
+        # Load per-level reconstructions if available
+        for key in data.keys():
+            if key.startswith('reconstructed_level_'):
+                sample_data[key] = data[key]
+
+        samples.append(sample_data)
     return samples
 
 def pose_to_smplx_params(pose_165d):
@@ -108,30 +116,30 @@ def denormalize_poses(normalized_poses, seq_min, seq_max):
 
 def visualize_pose(model, pose_params, plotting_module='pyrender', plot_joints=True, title="Pose"):
     """Visualize a single pose using SMPL-X model"""
-    
+
     try:
         output = model(**pose_params, return_verts=True)
         vertices = output.vertices.detach().cpu().numpy().squeeze()
         joints = output.joints.detach().cpu().numpy().squeeze()
-        
+
         print(f'{title} - Vertices shape: {vertices.shape}, Joints shape: {joints.shape}')
     except Exception as e:
         print(f"ERROR: Failed to generate mesh for {title}")
         print(f"Error: {e}")
         print("Check if pose parameters are valid")
         return
-    
+
     if plotting_module == 'pyrender':
         import pyrender
         import trimesh
-        
+
         vertex_colors = np.ones([vertices.shape[0], 4]) * [0.3, 0.3, 0.3, 0.8]
         tri_mesh = trimesh.Trimesh(vertices, model.faces, vertex_colors=vertex_colors)
         mesh = pyrender.Mesh.from_trimesh(tri_mesh)
-        
+
         scene = pyrender.Scene()
         scene.add(mesh)
-        
+
         if plot_joints:
             sm = trimesh.creation.uv_sphere(radius=0.005)
             sm.visual.vertex_colors = [0.9, 0.1, 0.1, 1.0]
@@ -139,9 +147,109 @@ def visualize_pose(model, pose_params, plotting_module='pyrender', plot_joints=T
             tfs[:, :3, 3] = joints
             joints_pcl = pyrender.Mesh.from_trimesh(sm, poses=tfs)
             scene.add(joints_pcl)
-        
+
         print(f"Showing {title}...")
         pyrender.Viewer(scene, use_raymond_lighting=True, window_title=title)
+
+
+def visualize_multiple_poses(model, pose_params_list, titles, plot_joints=True, spacing=1.5):
+    """
+    Visualize multiple poses side by side in a single view using pyrender.
+
+    Args:
+        model: SMPL-X model
+        pose_params_list: List of pose parameter dictionaries
+        titles: List of titles for each pose
+        plot_joints: Whether to plot joints
+        spacing: Horizontal spacing between avatars (in meters)
+    """
+    import pyrender
+    import trimesh
+
+    scene = pyrender.Scene()
+
+    # Define colors for different avatars
+    colors = [
+        [0.8, 0.2, 0.2, 0.8],  # Red - Original
+        [0.2, 0.8, 0.2, 0.8],  # Green - Level 1
+        [0.2, 0.2, 0.8, 0.8],  # Blue - Level 2
+        [0.8, 0.8, 0.2, 0.8],  # Yellow - Level 3
+        [0.8, 0.2, 0.8, 0.8],  # Magenta - Level 4
+        [0.2, 0.8, 0.8, 0.8],  # Cyan - Level 5
+    ]
+
+    # Joint colors (slightly brighter versions)
+    joint_colors = [
+        [1.0, 0.3, 0.3, 1.0],  # Bright red
+        [0.3, 1.0, 0.3, 1.0],  # Bright green
+        [0.3, 0.3, 1.0, 1.0],  # Bright blue
+        [1.0, 1.0, 0.3, 1.0],  # Bright yellow
+        [1.0, 0.3, 1.0, 1.0],  # Bright magenta
+        [0.3, 1.0, 1.0, 1.0],  # Bright cyan
+    ]
+
+    num_poses = len(pose_params_list)
+
+    # Calculate starting x position to center the avatars
+    total_width = (num_poses - 1) * spacing
+    start_x = -total_width / 2
+
+    print(f"\nGenerating {num_poses} avatars...")
+
+    for i, (pose_params, title) in enumerate(zip(pose_params_list, titles)):
+        try:
+            output = model(**pose_params, return_verts=True)
+            vertices = output.vertices.detach().cpu().numpy().squeeze()
+            joints = output.joints.detach().cpu().numpy().squeeze()
+
+            print(f'{title} - Vertices: {vertices.shape}, Joints: {joints.shape}')
+
+            # Offset avatar horizontally
+            x_offset = start_x + i * spacing
+            vertices_offset = vertices.copy()
+            vertices_offset[:, 0] += x_offset  # Offset in X direction
+
+            # Create mesh with colored vertices
+            vertex_colors = np.ones([vertices_offset.shape[0], 4]) * colors[i % len(colors)]
+            tri_mesh = trimesh.Trimesh(vertices_offset, model.faces, vertex_colors=vertex_colors)
+            mesh = pyrender.Mesh.from_trimesh(tri_mesh)
+            scene.add(mesh)
+
+            # Add joints if requested
+            if plot_joints:
+                joints_offset = joints.copy()
+                joints_offset[:, 0] += x_offset
+
+                sm = trimesh.creation.uv_sphere(radius=0.005)
+                sm.visual.vertex_colors = joint_colors[i % len(joint_colors)]
+                tfs = np.tile(np.eye(4), (len(joints_offset), 1, 1))
+                tfs[:, :3, 3] = joints_offset
+                joints_pcl = pyrender.Mesh.from_trimesh(sm, poses=tfs)
+                scene.add(joints_pcl)
+
+            # Add text label above avatar (using a simple sphere as marker)
+            # Text rendering is limited in pyrender, so we use a marker instead
+            label_sphere = trimesh.creation.uv_sphere(radius=0.02)
+            label_sphere.visual.vertex_colors = colors[i % len(colors)]
+            label_pos = np.array([x_offset, 0.0, 1.8])  # Above head
+            label_mesh = pyrender.Mesh.from_trimesh(label_sphere)
+            label_node = scene.add(label_mesh, pose=trimesh.transformations.translation_matrix(label_pos))
+
+        except Exception as e:
+            print(f"ERROR: Failed to generate mesh for {title}")
+            print(f"Error: {e}")
+            continue
+
+    # Create title string
+    title_str = " | ".join(titles)
+    print(f"\nShowing: {title_str}")
+    print(f"Color legend:")
+    for i, title in enumerate(titles):
+        color = colors[i % len(colors)]
+        print(f"  {title}: RGB({color[0]:.1f}, {color[1]:.1f}, {color[2]:.1f})")
+
+    # Show the scene
+    pyrender.Viewer(scene, use_raymond_lighting=True, window_title="Multi-Level Comparison")
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize HR-VQVAE pose reconstruction comparison')
@@ -151,7 +259,7 @@ def main():
                         type=str, help='Path to runtime samples directory')
     parser.add_argument('--sample-idx', default=-1, type=int,
                         help='Which sample to visualize (-1 for latest, 0-based index)')
-    parser.add_argument('--frame-idx', default=2, type=int,
+    parser.add_argument('--frame-idx', default=0, type=int,
                         help='Which frame in the sequence to visualize (0-based index)')
     parser.add_argument('--gender', default='neutral', type=str,
                         help='SMPL-X model gender')
@@ -168,7 +276,13 @@ def main():
                         help='Which frame from BEAT2 file to use')
     parser.add_argument('--use-real-beat2', action='store_true',
                         help='Compare with real BEAT2 poses instead of normalized originals')
-    
+    parser.add_argument('--multi-view', action='store_true',
+                        help='Show all levels side-by-side in a single view')
+    parser.add_argument('--spacing', default=1.5, type=float,
+                        help='Spacing between avatars in multi-view mode (in meters)')
+    parser.add_argument('--batch-idx', default=1, type=int,
+                        help='Which batch sample to visualize (0-based index)')
+
     args = parser.parse_args()
     
     # Load SMPL-X model
@@ -211,13 +325,20 @@ def main():
     print(f"Original shape: {sample['original'].shape}")
     print(f"Reconstructed shape: {sample['reconstructed'].shape}")
     
+    # Check batch_idx
+    batch_size = sample['original'].shape[0]
+    if args.batch_idx >= batch_size:
+        print(f"Batch index {args.batch_idx} out of range. Available samples in batch: {batch_size}")
+        args.batch_idx = 0
+        print(f"Using batch index 0 instead")
+
     # Extract specific frame
-    if args.frame_idx >= sample['original'].shape[0]:
-        print(f"Frame index {args.frame_idx} out of range. Available frames: {sample['original'].shape[0]}")
+    if args.frame_idx >= sample['original'].shape[1]:
+        print(f"Frame index {args.frame_idx} out of range. Available frames: {sample['original'].shape[1]}")
         return
-    
-    original_frame = sample['original'][args.frame_idx, 0, :]  # (165,)
-    reconstructed_frame = sample['reconstructed'][args.frame_idx, 0, :]  # (165,)
+
+    original_frame = sample['original'][args.batch_idx, args.frame_idx, :]  # (165,)
+    reconstructed_frame = sample['reconstructed'][args.batch_idx, args.frame_idx, :]  # (165,)
     
     # Debug: Check pose values
     print(f"Original pose stats - min: {original_frame.min():.3f}, max: {original_frame.max():.3f}, mean: {original_frame.mean():.3f}")
@@ -282,27 +403,71 @@ def main():
     # Convert to SMPL-X parameters
     original_params = pose_to_smplx_params(original_denorm)
     reconstructed_params = pose_to_smplx_params(reconstructed_denorm)
-    
-    # Visualize poses
-    if args.use_real_beat2:
-        print("\n=== REAL BEAT2 POSE ===")
-        visualize_pose(model, original_params, args.plotting_module, args.plot_joints, "Real BEAT2 Pose")
-    else:
-        print("\n=== ORIGINAL POSE ===")
-        visualize_pose(model, original_params, args.plotting_module, args.plot_joints, "Original Pose")
-    
-    print("\n=== RECONSTRUCTED POSE ===")
-    visualize_pose(model, reconstructed_params, args.plotting_module, args.plot_joints, "Reconstructed Pose")
-    
-    # Calculate reconstruction error
-    mse_denormalized = np.mean((original_denorm - reconstructed_denorm) ** 2)
-    print(f"\nReconstruction MSE: {mse_denormalized:.6f}")
-    
-    # Joint-wise comparison (first 10 joints)
-    print("Joint angle differences (first 10 dims):")
-    diff = np.abs(original_denorm[:10] - reconstructed_denorm[:10])
-    for i, d in enumerate(diff):
-        print(f"  Dim {i}: {d:.3f} radians ({np.degrees(d):.1f}°)")
+
+    # Check if multi-view mode is enabled and per-level data is available
+    if args.multi_view:
+        # Collect all level reconstructions
+        level_keys = sorted([k for k in sample.keys() if k.startswith('reconstructed_level_')])
+
+        if not level_keys:
+            print("\nWARNING: --multi-view requested but no per-level reconstructions found!")
+            print("Falling back to single-view mode...")
+            args.multi_view = False
+        else:
+            # Prepare poses for multi-view
+            all_poses = [original_denorm]
+            all_titles = ["Original"]
+
+            for key in level_keys:
+                level_num = int(key.split('_')[-1])
+                level_data = sample[key][args.batch_idx, args.frame_idx, :]  # (165,)
+                all_poses.append(level_data)
+                all_titles.append(f"Level {level_num}")
+
+            # Add full reconstruction at the end
+            all_poses.append(reconstructed_denorm)
+            all_titles.append("Full")
+
+            # Convert all to SMPL-X parameters
+            all_params = [pose_to_smplx_params(pose) for pose in all_poses]
+
+            # Calculate MSE for each level
+            print("\n" + "=" * 60)
+            print("MULTI-LEVEL COMPARISON")
+            print("=" * 60)
+            for i, (pose, title) in enumerate(zip(all_poses, all_titles)):
+                if i == 0:
+                    continue  # Skip original
+                mse = np.mean((original_denorm - pose) ** 2)
+                print(f"{title:15s} MSE: {mse:.6f}")
+            print("=" * 60)
+
+            # Show all in one view
+            visualize_multiple_poses(model, all_params, all_titles,
+                                   plot_joints=args.plot_joints,
+                                   spacing=args.spacing)
+
+    if not args.multi_view:
+        # Original single-view visualization
+        if args.use_real_beat2:
+            print("\n=== REAL BEAT2 POSE ===")
+            visualize_pose(model, original_params, args.plotting_module, args.plot_joints, "Real BEAT2 Pose")
+        else:
+            print("\n=== ORIGINAL POSE ===")
+            visualize_pose(model, original_params, args.plotting_module, args.plot_joints, "Original Pose")
+
+        print("\n=== RECONSTRUCTED POSE ===")
+        visualize_pose(model, reconstructed_params, args.plotting_module, args.plot_joints, "Reconstructed Pose")
+
+        # Calculate reconstruction error
+        mse_denormalized = np.mean((original_denorm - reconstructed_denorm) ** 2)
+        print(f"\nReconstruction MSE: {mse_denormalized:.6f}")
+
+        # Joint-wise comparison (first 10 joints)
+        print("Joint angle differences (first 10 dims):")
+        diff = np.abs(original_denorm[:10] - reconstructed_denorm[:10])
+        for i, d in enumerate(diff):
+            print(f"  Dim {i}: {d:.3f} radians ({np.degrees(d):.1f}°)")
 
 if __name__ == '__main__':
     main()

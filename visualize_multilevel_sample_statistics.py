@@ -17,9 +17,41 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 
+# SMPLX pose parameter structure (165 dimensions total)
+SMPLX_BODY_PARTS = {
+    'Global Orient': (0, 3),        # Root orientation
+    'Body': (3, 66),                # Body joints (21 joints * 3)
+    'Jaw': (66, 69),                # Jaw
+    'Left Eye': (69, 72),           # Left eye
+    'Right Eye': (72, 75),          # Right eye
+    'Left Hand': (75, 120),         # Left hand (15 joints * 3)
+    'Right Hand': (120, 165),       # Right hand (15 joints * 3)
+}
+
+
 def compute_reconstruction_error(original, reconstructed):
     """Compute MSE between original and reconstructed poses."""
     return np.mean((original - reconstructed) ** 2)
+
+
+def compute_bodypart_errors(original, reconstructed, body_parts=SMPLX_BODY_PARTS):
+    """
+    Compute MSE for each body part separately.
+
+    Args:
+        original: (batch, seq_len, 165) original poses
+        reconstructed: (batch, seq_len, 165) reconstructed poses
+        body_parts: Dictionary mapping body part names to (start, end) indices
+
+    Returns:
+        Dictionary mapping body part names to MSE values
+    """
+    errors = {}
+    for part_name, (start, end) in body_parts.items():
+        orig_part = original[:, :, start:end]
+        recon_part = reconstructed[:, :, start:end]
+        errors[part_name] = np.mean((orig_part - recon_part) ** 2)
+    return errors
 
 
 def visualize_multilevel_comparison(sample_file):
@@ -136,52 +168,96 @@ def visualize_multilevel_comparison(sample_file):
                         f'{imp:.1f}%',
                         ha='center', va='bottom', fontsize=9)
 
-    # Plot 3: Pose comparison for a few dimensions
-    ax3 = plt.subplot(2, 2, 3)
-
-    # Select first 10 pose dimensions to visualize
-    n_dims = min(10, original.shape[-1])
-    x = np.arange(n_dims)
-
-    orig_vals = original[sample_idx, frame_idx, :n_dims]
-    ax3.plot(x, orig_vals, 'ko-', label='Original', linewidth=2, markersize=8)
-
-    colors = ['red', 'orange', 'blue', 'green']
-    for idx, level in enumerate(levels):
-        level_recon = data[f'reconstructed_level_{level}']
-        recon_vals = level_recon[sample_idx, frame_idx, :n_dims]
-        ax3.plot(x, recon_vals, 'o--', label=f'Level {level}',
-                color=colors[idx % len(colors)], alpha=0.7, markersize=6)
-
-    ax3.set_xlabel('Pose Dimension')
-    ax3.set_ylabel('Value')
-    ax3.set_title(f'Pose Reconstruction (First {n_dims} dimensions)')
-    ax3.legend()
-    ax3.grid(alpha=0.3)
-
-    # Plot 4: Error heatmap across pose dimensions
-    ax4 = plt.subplot(2, 2, 4)
-
-    # Compute per-dimension errors for each level
-    n_dims_heatmap = min(50, original.shape[-1])  # Show first 50 dimensions
-    error_matrix = []
+    # Compute body part errors for each level
+    bodypart_errors_by_level = {}
+    print("\nBody Part Errors by Level:")
+    print("-" * 80)
 
     for level in levels:
         level_recon = data[f'reconstructed_level_{level}']
-        # Average over batch and sequence, compute error per dimension
-        dim_errors = np.mean((original[:, :, :n_dims_heatmap] -
-                             level_recon[:, :, :n_dims_heatmap]) ** 2, axis=(0, 1))
-        error_matrix.append(dim_errors)
+        bodypart_errors = compute_bodypart_errors(original, level_recon)
+        bodypart_errors_by_level[level] = bodypart_errors
 
-    error_matrix = np.array(error_matrix)
+        print(f"\nLevel {level}:")
+        for part_name, error in bodypart_errors.items():
+            print(f"  {part_name:15s}: {error:.6f}")
 
-    im = ax4.imshow(error_matrix, aspect='auto', cmap='YlOrRd', interpolation='nearest')
-    ax4.set_yticks(range(len(levels)))
-    ax4.set_yticklabels([f'Level {l}' for l in levels])
-    ax4.set_xlabel('Pose Dimension')
-    ax4.set_ylabel('Quantization Level')
-    ax4.set_title(f'Error per Dimension (First {n_dims_heatmap} dims)')
-    plt.colorbar(im, ax=ax4, label='MSE')
+    print("-" * 80)
+
+    # Plot 3: MSE by body part for each level (grouped bar chart)
+    ax3 = plt.subplot(2, 2, 3)
+
+    body_part_names = list(SMPLX_BODY_PARTS.keys())
+    x = np.arange(len(body_part_names))
+    width = 0.8 / len(levels)  # Width of bars
+
+    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#95E1D3']
+    for idx, level in enumerate(levels):
+        errors_list = [bodypart_errors_by_level[level][part] for part in body_part_names]
+        offset = (idx - len(levels)/2 + 0.5) * width
+        bars = ax3.bar(x + offset, errors_list, width, label=f'Level {level}',
+                      color=colors[idx % len(colors)], alpha=0.8)
+
+    ax3.set_ylabel('MSE')
+    ax3.set_xlabel('Body Part')
+    ax3.set_title('Reconstruction Error by Body Part')
+    ax3.set_xticks(x)
+    ax3.set_xticklabels(body_part_names, rotation=45, ha='right')
+    ax3.legend()
+    ax3.grid(axis='y', alpha=0.3)
+
+    # Plot 4: Improvement in body part errors from Level 1 to final level
+    ax4 = plt.subplot(2, 2, 4)
+
+    if len(levels) > 1:
+        # Compare first level vs last level
+        first_level = levels[0]
+        last_level = levels[-1]
+
+        first_errors = [bodypart_errors_by_level[first_level][part] for part in body_part_names]
+        last_errors = [bodypart_errors_by_level[last_level][part] for part in body_part_names]
+
+        # Compute percentage improvement
+        improvements = []
+        for first_err, last_err in zip(first_errors, last_errors):
+            if first_err > 0:
+                improvement_pct = ((first_err - last_err) / first_err) * 100
+            else:
+                improvement_pct = 0
+            improvements.append(improvement_pct)
+
+        # Color bars based on improvement (green=good, red=worse)
+        bar_colors = ['#2ECC71' if imp > 0 else '#E74C3C' for imp in improvements]
+
+        bars = ax4.bar(x, improvements, color=bar_colors, alpha=0.7, edgecolor='black', linewidth=0.5)
+        ax4.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
+        ax4.set_ylabel('Improvement (%)')
+        ax4.set_xlabel('Body Part')
+        ax4.set_title(f'Improvement from Level {first_level} to Level {last_level}')
+        ax4.set_xticks(x)
+        ax4.set_xticklabels(body_part_names, rotation=45, ha='right')
+        ax4.grid(axis='y', alpha=0.3)
+
+        # Add value labels on bars
+        for bar, imp in zip(bars, improvements):
+            height = bar.get_height()
+            label_y = height + (ax4.get_ylim()[1] - ax4.get_ylim()[0]) * 0.01
+            if height < 0:
+                label_y = height - (ax4.get_ylim()[1] - ax4.get_ylim()[0]) * 0.03
+            ax4.text(bar.get_x() + bar.get_width()/2., label_y,
+                    f'{imp:.1f}%',
+                    ha='center', va='bottom' if height > 0 else 'top',
+                    fontsize=8, fontweight='bold')
+    else:
+        # If only one level, show the errors directly
+        errors_list = [bodypart_errors_by_level[levels[0]][part] for part in body_part_names]
+        ax4.bar(x, errors_list, color='#4ECDC4', alpha=0.7)
+        ax4.set_ylabel('MSE')
+        ax4.set_xlabel('Body Part')
+        ax4.set_title(f'Body Part Errors (Level {levels[0]})')
+        ax4.set_xticks(x)
+        ax4.set_xticklabels(body_part_names, rotation=45, ha='right')
+        ax4.grid(axis='y', alpha=0.3)
 
     plt.tight_layout()
 
