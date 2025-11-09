@@ -118,26 +118,26 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
 
         lr = optimizer.param_groups[0]['lr']
 
-        # Update progress bar
+        # Compute running averages for display
+        avg_pose = pose_mse_sum / mse_n
+        avg_vertex = vertex_mse_sum / mse_n
+        avg_joint = joint_mse_sum / mse_n
+        avg_total = total_loss_sum / mse_n
+
+        # Update progress bar with running averages
         desc = (
             f'epoch: {epoch_num + 1}; '
-            f'pose_mse: {pose_recon_loss.item():.5f}; '
+            f'pose: {avg_pose:.5f}; '
         )
         if use_smplx_loss:
             desc += (
-                f'vert_mse: {vertex_recon_loss.item():.5f}; '
-                f'joint_mse: {joint_recon_loss.item():.5f}; '
+                f'vert: {avg_vertex:.5f}; '
+                f'joint: {avg_joint:.5f}; '
             )
         desc += (
-            f'latent: {latent_loss.item():.3f}; '
-            f'avg_pose: {pose_mse_sum / mse_n:.5f}; '
+            f'total: {avg_total:.5f}; '
+            f'lr: {lr:.5f}'
         )
-        if use_smplx_loss:
-            desc += (
-                f'avg_vert: {vertex_mse_sum / mse_n:.5f}; '
-                f'avg_joint: {joint_mse_sum / mse_n:.5f}; '
-            )
-        desc += f'lr: {lr:.5f}'
         loader.set_description(desc)
 
     # Log to TensorBoard

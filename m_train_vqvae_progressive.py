@@ -158,21 +158,28 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
 
         lr = optimizer.param_groups[0]['lr']
 
-        # Update progress bar
+        # Compute running averages for display
+        avg_level_1 = level_1_loss_sum / mse_n
+        avg_level_2 = level_2_loss_sum / mse_n
+        avg_level_3_pose = level_3_pose_sum / mse_n
+        avg_level_3_vertex = level_3_vertex_sum / mse_n
+        avg_level_3_joint = level_3_joint_sum / mse_n
+        avg_total = total_loss_sum / mse_n
+
+        # Update progress bar with running averages
         desc = (
             f'epoch: {epoch_num + 1}; '
-            f'L1(body): {level_1_loss.item():.5f}; '
-            f'L2(hands): {level_2_loss.item():.5f}; '
-            f'L3(pose): {level_3_pose_loss.item():.5f}; '
+            f'L1(body): {avg_level_1:.5f}; '
+            f'L2(hands): {avg_level_2:.5f}; '
+            f'L3(pose): {avg_level_3_pose:.5f}; '
         )
         if use_smplx_loss:
             desc += (
-                f'L3(vert): {vertex_recon_loss.item():.5f}; '
-                f'L3(joint): {joint_recon_loss.item():.5f}; '
+                f'L3(vert): {avg_level_3_vertex:.5f}; '
+                f'L3(joint): {avg_level_3_joint:.5f}; '
             )
         desc += (
-            f'latent: {latent_loss.item():.3f}; '
-            f'total: {total_loss.item():.5f}; '
+            f'total: {avg_total:.5f}; '
             f'lr: {lr:.5f}'
         )
         loader.set_description(desc)
