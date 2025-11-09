@@ -20,6 +20,19 @@ amp=None
 sample_period = 1
 sampler = vqvae_sampler
 
+# ===== Progressive Training Configuration =====
+# Set to True to enable progressive training with level-specific losses:
+#   - Level 1: Focus on body pose (global_orient + body)
+#   - Level 2: Focus on hands
+#   - Level 3: Overall reconstruction + SMPLX geometry
+# Set to False for standard training (all levels contribute to final output)
+use_progressive = True
+
+# Weights for each level in progressive training (only used if use_progressive=True)
+level_1_weight = 1.0  # Body pose loss weight
+level_2_weight = 1.0  # Hand pose loss weight
+level_3_weight = 1.0  # Final reconstruction loss weight
+
 if folder_name == 'top':
     loader = get_lmdb_pixel_loader(dataset_name, n_run, batch_size,
                                    x_name='top', cond=None, shuffle=True, num_workers=4)
@@ -66,5 +79,9 @@ train(
        device=device,
        size=size,
        lr=lr,
-       amp=amp)
+       amp=amp,
+       use_progressive=use_progressive,
+       level_1_weight=level_1_weight,
+       level_2_weight=level_2_weight,
+       level_3_weight=level_3_weight)
 

@@ -246,10 +246,14 @@ class VQVAE_Pose_ML(nn.Module):
         else:
             self.smplx_layer = None
 
-    def forward(self, input, compute_geometry=False):
+    def forward(self, input, compute_geometry=False, return_intermediate=False):
         # Input: (batch, sequence_length, pose_dim)
         # Transpose to (batch, pose_dim, sequence_length) for conv1d
         input = input.transpose(1, 2)
+
+        if return_intermediate:
+            # Return intermediate reconstructions for progressive training
+            return self.forward_with_intermediate_outputs(input, compute_geometry)
 
         quant, diff, _ = self.encode(input)
         dec = self.decode(quant)
@@ -263,6 +267,61 @@ class VQVAE_Pose_ML(nn.Module):
             return dec, diff, vertices, joints
 
         return dec, diff
+
+    def forward_with_intermediate_outputs(self, input, compute_geometry=False):
+        """
+        Forward pass that returns intermediate reconstructions at each level.
+        Useful for progressive training with level-specific losses.
+
+        Args:
+            input: (batch, pose_dim, seq_len) in conv1d format
+            compute_geometry: Whether to compute SMPLX geometry for final output
+
+        Returns:
+            intermediate_outputs: List of reconstructions [level_1, level_2, ..., level_n]
+            diffs: List of quantization losses per level
+            pred_vertices: SMPLX vertices for final output (if compute_geometry=True)
+            pred_joints: SMPLX joints for final output (if compute_geometry=True)
+        """
+        enc = self.enc(input)
+        quant = self.quantize_conv(enc)
+
+        residual = quant.permute(0, 2, 1)  # (B, T, D)
+        accumulated_quant = torch.zeros_like(residual)
+
+        intermediate_outputs = []
+        diffs = []
+
+        for i in range(self.n_level):
+            # Quantize at this level
+            quantized, diff, id = self.quantizes[i](residual)
+            diffs.append(diff)
+
+            # Accumulate quantizations
+            accumulated_quant = accumulated_quant + quantized
+
+            # Decode from accumulated quantization up to this level
+            level_quant = accumulated_quant.permute(0, 2, 1)  # (B, D, T)
+            level_dec = self.decode(level_quant)
+            level_dec = level_dec.transpose(1, 2)  # (B, T, pose_dim)
+
+            intermediate_outputs.append(level_dec)
+
+            # Update residual for next level
+            residual = residual - quantized
+
+        # Optionally compute geometry for final output
+        pred_vertices, pred_joints = None, None
+        if compute_geometry and self.use_smplx:
+            pred_vertices, pred_joints = self.smplx_layer(intermediate_outputs[-1])
+
+        # Stack diffs for backward compatibility
+        combined_diff = torch.stack(diffs).mean().unsqueeze(0)
+
+        if compute_geometry and self.use_smplx:
+            return intermediate_outputs, combined_diff, pred_vertices, pred_joints
+
+        return intermediate_outputs, combined_diff
 
     def encode(self, input):
         enc = self.enc(input)

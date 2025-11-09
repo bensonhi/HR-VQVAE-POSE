@@ -4,6 +4,7 @@ from m_util import conf_parser, model_object_parser, get_model_type, get_path, l
 from consts import PIXELSNAIL, VQVAE, TOP, BOTTOM, MIDDLE, VQVAE_1
 from m_train_pixelsnail import train as train_pixelsnail
 from m_train_vqvae import train as train_vqvae
+from m_train_vqvae_progressive import train_progressive
 from torch.utils.tensorboard import SummaryWriter
 
 from torch import optim, nn
@@ -25,7 +26,8 @@ def get_scheduler(lr, epoch, sched, optimizer, loader):
 
 
 def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, start_epoch=-1,
-          end_epoch=-1, batch_size=-1, sched=None, device='cuda', size=256, lr=-1, amp=None):
+          end_epoch=-1, batch_size=-1, sched=None, device='cuda', size=256, lr=-1, amp=None,
+          use_progressive=False, level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0):
 
     model_type = get_model_type(folder_name)
     _, train_params = conf_parser(dataset_name, n_run, folder_name)
@@ -103,10 +105,23 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
             sample_iter += 1
             do_sample = sample_period > 0 and sample_iter % sample_period ==0
 
-            train_vqvae(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
-                       use_smplx_loss=use_smplx_loss,
-                       pose_loss_weight=1.0,
-                       vertex_loss_weight=5.0,
-                       joint_loss_weight=3.0)
+            if use_progressive:
+                # Progressive training with level-specific losses
+                train_progressive(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
+                                use_smplx_loss=use_smplx_loss,
+                                pose_loss_weight=1.0,
+                                vertex_loss_weight=5.0,
+                                joint_loss_weight=3.0,
+                                level_1_weight=level_1_weight,
+                                level_2_weight=level_2_weight,
+                                level_3_weight=level_3_weight)
+            else:
+                # Standard training with final output only
+                train_vqvae(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
+                           use_smplx_loss=use_smplx_loss,
+                           pose_loss_weight=1.0,
+                           vertex_loss_weight=5.0,
+                           joint_loss_weight=3.0)
+
             save_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
             torch.save(model.state_dict(), save_path)
