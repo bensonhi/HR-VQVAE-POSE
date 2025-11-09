@@ -172,80 +172,32 @@ def train_epoch(epoch, loader, model, optimizer, device, level):
     return avg_loss, avg_acc
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Train PixelSNAIL for hierarchical VQ-VAE')
-
-    # Data
-    parser.add_argument('--codes', type=str, default='codes_dataset.npz',
-                       help='Path to extracted codes file')
-    parser.add_argument('--level', type=int, required=True, choices=[1, 2, 3],
-                       help='Which level to train (1=top, 2=middle, 3=bottom)')
-
-    # Model architecture
-    parser.add_argument('--channel', type=int, default=256,
-                       help='Number of channels in PixelSNAIL')
-    parser.add_argument('--n-block', type=int, default=4,
-                       help='Number of PixelSNAIL blocks')
-    parser.add_argument('--n-res-block', type=int, default=4,
-                       help='Number of residual blocks per PixelSNAIL block')
-    parser.add_argument('--res-channel', type=int, default=256,
-                       help='Residual channel size')
-    parser.add_argument('--kernel-size', type=int, default=5,
-                       help='Kernel size')
-    parser.add_argument('--attention', action='store_true',
-                       help='Use attention in PixelSNAIL')
-    parser.add_argument('--dropout', type=float, default=0.1,
-                       help='Dropout rate')
-
-    # Training
-    parser.add_argument('--batch-size', type=int, default=32,
-                       help='Batch size')
-    parser.add_argument('--epochs', type=int, default=100,
-                       help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=3e-4,
-                       help='Learning rate')
-    parser.add_argument('--device', type=str, default='cuda',
-                       help='Device (cuda or cpu)')
-
-    # Sequence shape
-    parser.add_argument('--seq-height', type=int, default=5,
-                       help='Height of sequence (height * width = seq_len)')
-    parser.add_argument('--seq-width', type=int, default=5,
-                       help='Width of sequence')
-
-    # Output
-    parser.add_argument('--save-dir', type=str, default='checkpoint/beat2_poses/0/pixelsnail',
-                       help='Directory to save checkpoints')
-    parser.add_argument('--save-every', type=int, default=10,
-                       help='Save checkpoint every N epochs')
-
-    args = parser.parse_args()
-
-    print("="*60)
-    print(f"TRAINING PIXELSNAIL - LEVEL {args.level}")
+def train_single_level(level, args):
+    """Train a single PixelSNAIL level."""
+    print("\n" + "="*60)
+    print(f"TRAINING PIXELSNAIL - LEVEL {level}")
     print("="*60)
 
     # Create save directory
-    level_dir = os.path.join(args.save_dir, f'level_{args.level}')
+    level_dir = os.path.join(args.save_dir, f'level_{level}')
     os.makedirs(level_dir, exist_ok=True)
 
-    # Load codebook sizes from extracted codes
-    data = np.load(args.codes)
+    # Load codebook sizes
     codebook_sizes = {
         1: 8,    # Level 1 codebook size
         2: 64,   # Level 2 codebook size
         3: 512   # Level 3 codebook size
     }
-    n_class = codebook_sizes[args.level]
+    n_class = codebook_sizes[level]
 
     print(f"\n1. Creating dataset...")
-    print(f"   Level: {args.level}")
+    print(f"   Level: {level}")
     print(f"   Codebook size: {n_class}")
 
     # Create dataset
     dataset = CodeDataset(
         args.codes,
-        level=args.level,
+        level=level,
         seq_height=args.seq_height,
         seq_width=args.seq_width
     )
@@ -272,9 +224,9 @@ def main():
         attention=args.attention,
         dropout=args.dropout,
         # Conditional parameters (for levels 2 and 3)
-        cond_channel=n_class if args.level > 1 else 0,
-        n_cond_res_block=args.n_res_block if args.level > 1 else 0,
-        cond_res_channel=args.res_channel if args.level > 1 else 0,
+        cond_channel=n_class if level > 1 else 0,
+        n_cond_res_block=args.n_res_block if level > 1 else 0,
+        cond_res_channel=args.res_channel if level > 1 else 0,
         cond_res_kernel=3,
         n_out_res_block=0
     )
@@ -303,7 +255,7 @@ def main():
 
     for epoch in range(args.epochs):
         # Train
-        avg_loss, avg_acc = train_epoch(epoch, loader, model, optimizer, args.device, args.level)
+        avg_loss, avg_acc = train_epoch(epoch, loader, model, optimizer, args.device, level)
 
         # Learning rate schedule
         scheduler.step()
@@ -350,18 +302,104 @@ def main():
     writer.close()
 
     print("\n" + "="*60)
-    print("TRAINING COMPLETE!")
+    print(f"LEVEL {level} TRAINING COMPLETE!")
     print("="*60)
     print(f"Best loss: {best_loss:.4f}")
     print(f"Checkpoints saved to: {level_dir}")
 
+    return {'level': level, 'best_loss': best_loss, 'final_acc': avg_acc}
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Train PixelSNAIL for hierarchical VQ-VAE')
+
+    # Data
+    parser.add_argument('--codes', type=str, default='codes_dataset.npz',
+                       help='Path to extracted codes file')
+    parser.add_argument('--level', type=int, required=True, choices=[-1, 1, 2, 3],
+                       help='Which level to train (1=top, 2=middle, 3=bottom, -1=all levels sequentially)')
+
+    # Model architecture
+    parser.add_argument('--channel', type=int, default=256,
+                       help='Number of channels in PixelSNAIL')
+    parser.add_argument('--n-block', type=int, default=4,
+                       help='Number of PixelSNAIL blocks')
+    parser.add_argument('--n-res-block', type=int, default=4,
+                       help='Number of residual blocks per PixelSNAIL block')
+    parser.add_argument('--res-channel'
+                        '', type=int, default=256,
+                       help='Residual channel size')
+    parser.add_argument('--kernel-size', type=int, default=5,
+                       help='Kernel size')
+    parser.add_argument('--attention', action='store_true',
+                       help='Use attention in PixelSNAIL')
+    parser.add_argument('--dropout', type=float, default=0.1,
+                       help='Dropout rate')
+
+    # Training
+    parser.add_argument('--batch-size', type=int, default=32,
+                       help='Batch size')
+    parser.add_argument('--epochs', type=int, default=100,
+                       help='Number of epochs')
+    parser.add_argument('--lr', type=float, default=3e-4,
+                       help='Learning rate')
+    parser.add_argument('--device', type=str, default='cuda',
+                       help='Device (cuda or cpu)')
+
+    # Sequence shape
+    parser.add_argument('--seq-height', type=int, default=5,
+                       help='Height of sequence (height * width = seq_len)')
+    parser.add_argument('--seq-width', type=int, default=5,
+                       help='Width of sequence')
+
+    # Output
+    parser.add_argument('--save-dir', type=str, default='checkpoint/beat2_poses/0/pixelsnail',
+                       help='Directory to save checkpoints')
+    parser.add_argument('--save-every', type=int, default=10,
+                       help='Save checkpoint every N epochs')
+
+    args = parser.parse_args()
+
+    # Determine which levels to train
+    if args.level == -1:
+        levels_to_train = [1, 2, 3]
+        print("="*60)
+        print("TRAINING ALL PIXELSNAIL LEVELS SEQUENTIALLY")
+        print("="*60)
+        print("This will train Level 1 → Level 2 → Level 3")
+        print(f"Total epochs: {args.epochs * 3}")
+        print("="*60)
+    else:
+        levels_to_train = [args.level]
+
+    # Train each level
+    results = []
+    for level in levels_to_train:
+        result = train_single_level(level, args)
+        results.append(result)
+
+    # Print final summary
+    print("\n" + "="*60)
+    print("ALL TRAINING COMPLETE!")
+    print("="*60)
+
+    for result in results:
+        print(f"\nLevel {result['level']}:")
+        print(f"  Best loss: {result['best_loss']:.4f}")
+        print(f"  Final accuracy: {result['final_acc']:.4f}")
+
+    print(f"\nCheckpoints saved to: {args.save_dir}")
+
     print("\nNext steps:")
-    if args.level < 3:
+    if args.level == -1 or args.level == 3:
+        print("  1. All levels trained! You can now use the prior for sampling.")
+        print("  2. Generate samples:")
+        print(f"     python sample_with_prior.py --vqvae-checkpoint <path> --use-best")
+    else:
         print(f"  1. Train level {args.level + 1}:")
         print(f"     python train_pixelsnail_hierarchical.py --level {args.level + 1} --codes {args.codes}")
-    else:
-        print("  1. All levels trained! You can now use the prior for sampling.")
-        print("  2. See sample_with_prior.py for generation examples")
+        print("  2. Or train all remaining levels:")
+        print(f"     python train_pixelsnail_hierarchical.py --level -1 --codes {args.codes}")
 
 
 if __name__ == '__main__':
