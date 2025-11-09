@@ -56,7 +56,7 @@ elif folder_name == 'vqvae':
         data_path='BEAT2_joints_vertices',  # Has both poses and pre-computed GT
         language='english',
         batch_size=32,
-        sequence_length=1,
+        sequence_length=25,
         shuffle=True,
         num_workers=8,  # Parallel data loading (optimal for 13 CPUs)
         use_axis_angle=True,  # Load axis-angle poses (165D)
