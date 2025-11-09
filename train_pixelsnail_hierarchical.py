@@ -320,18 +320,17 @@ def main():
                        help='Which level to train (1=top, 2=middle, 3=bottom, -1=all levels sequentially)')
 
     # Model architecture
-    parser.add_argument('--channel', type=int, default=256,
+    parser.add_argument('--channel', type=int, default=128,
                        help='Number of channels in PixelSNAIL')
     parser.add_argument('--n-block', type=int, default=4,
                        help='Number of PixelSNAIL blocks')
     parser.add_argument('--n-res-block', type=int, default=4,
                        help='Number of residual blocks per PixelSNAIL block')
-    parser.add_argument('--res-channel'
-                        '', type=int, default=256,
+    parser.add_argument('--res-channel', type=int, default=64,
                        help='Residual channel size')
     parser.add_argument('--kernel-size', type=int, default=5,
                        help='Kernel size')
-    parser.add_argument('--attention', action='store_true',
+    parser.add_argument('--attention', type=bool, default=True,
                        help='Use attention in PixelSNAIL')
     parser.add_argument('--dropout', type=float, default=0.1,
                        help='Dropout rate')
