@@ -27,7 +27,8 @@ def get_scheduler(lr, epoch, sched, optimizer, loader):
 
 def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, start_epoch=-1,
           end_epoch=-1, batch_size=-1, sched=None, device='cuda', size=256, lr=-1, amp=None,
-          use_progressive=False, level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0):
+          use_progressive=False, level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
+          patience=-1):
 
     model_type = get_model_type(folder_name)
     _, train_params = conf_parser(dataset_name, n_run, folder_name)
@@ -101,13 +102,24 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
         elif hasattr(model, 'use_smplx'):
             use_smplx_loss = model.use_smplx
 
+        # Early stopping setup
+        best_loss = float('inf')
+        epochs_without_improvement = 0
+        best_model_state = None
+        early_stop_enabled = patience > 0
+
+        if early_stop_enabled:
+            print(f"Early stopping enabled with patience={patience}")
+        else:
+            print("Early stopping disabled")
+
         for i in range(start_epoch, end_epoch):
             sample_iter += 1
             do_sample = sample_period > 0 and sample_iter % sample_period ==0
 
             if use_progressive:
                 # Progressive training with level-specific losses
-                train_progressive(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
+                epoch_loss = train_progressive(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
                                 use_smplx_loss=use_smplx_loss,
                                 pose_loss_weight=1.0,
                                 vertex_loss_weight=5.0,
@@ -117,11 +129,43 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                                 level_3_weight=level_3_weight)
             else:
                 # Standard training with final output only
-                train_vqvae(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
+                epoch_loss = train_vqvae(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
                            use_smplx_loss=use_smplx_loss,
                            pose_loss_weight=1.0,
                            vertex_loss_weight=5.0,
                            joint_loss_weight=3.0)
 
+            # Early stopping check
+            is_best = epoch_loss < best_loss
+            if is_best:
+                best_loss = epoch_loss
+                epochs_without_improvement = 0
+                if early_stop_enabled:
+                    best_model_state = model.state_dict()
+                    print(f"  New best loss: {best_loss:.6f}")
+            else:
+                epochs_without_improvement += 1
+
+            # Save checkpoint
             save_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
             torch.save(model.state_dict(), save_path)
+
+            # Save best checkpoint
+            if is_best:
+                best_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint='best')
+                torch.save(model.state_dict(), best_path)
+
+            # Check if should stop early
+            if early_stop_enabled and epochs_without_improvement >= patience:
+                print(f"\n⚠️  Early stopping triggered after epoch {i+1}")
+                print(f"   No improvement for {patience} epochs")
+                print(f"   Best loss: {best_loss:.6f} at epoch {i+1-epochs_without_improvement}")
+                if best_model_state is not None:
+                    model.load_state_dict(best_model_state)
+                    # Save final best model
+                    final_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
+                    torch.save(model.state_dict(), final_path)
+                    print(f"   Restored and saved best model to {final_path}")
+                break
+
+        writer.close()

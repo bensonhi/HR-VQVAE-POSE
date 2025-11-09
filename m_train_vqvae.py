@@ -152,3 +152,6 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
     # Sample if needed
     if do_sample:
         sampler(folder_name, model, poses, dataset_name, run_num, epoch_num, poses.shape[0])
+
+    # Return average total loss for early stopping
+    return total_loss_sum / mse_n

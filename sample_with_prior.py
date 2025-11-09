@@ -21,6 +21,8 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
+import pyrender
+import trimesh
 
 from m_util import model_object_parser, load_checkpoint
 from m_pixelsnail import PixelSNAIL
@@ -82,6 +84,136 @@ def sample_pixelsnail(model, batch_size, seq_height, seq_width, device, conditio
             codes[:, 0, i, j] = sampled
 
     return codes.squeeze(1)  # (batch, height, width)
+
+
+def visualize_hierarchical_levels(vqvae_model, codes_all, sample_idx=0, frame_idx=0):
+    """
+    Visualize poses from each hierarchical level side-by-side.
+
+    Args:
+        vqvae_model: Trained VQ-VAE model
+        codes_all: List of [codes_L1, codes_L2, codes_L3]
+        sample_idx: Which sample to visualize
+        frame_idx: Which frame to visualize
+    """
+    try:
+        import smplx
+    except ImportError:
+        print("⚠️  smplx not installed. Skipping visualization.")
+        print("   Install with: pip install smplx")
+        return
+
+    actual_model = vqvae_model.module if hasattr(vqvae_model, 'module') else vqvae_model
+
+    print(f"\nVisualizing hierarchical levels for sample {sample_idx}, frame {frame_idx}...")
+
+    # Decode poses for each level (1, 1+2, 1+2+3)
+    poses_by_level = []
+
+    # Level 1 only
+    pose_l1 = actual_model.decode_code([codes_all[0]])
+    poses_by_level.append(pose_l1[sample_idx, frame_idx].cpu().numpy())
+
+    # Level 1 + 2
+    pose_l2 = actual_model.decode_code([codes_all[0], codes_all[1]])
+    poses_by_level.append(pose_l2[sample_idx, frame_idx].cpu().numpy())
+
+    # Level 1 + 2 + 3 (full)
+    pose_l3 = actual_model.decode_code(codes_all)
+    poses_by_level.append(pose_l3[sample_idx, frame_idx].cpu().numpy())
+
+    # Initialize SMPLX model
+    smplx_model = smplx.create(
+        'models_smplx_v1_1/models',
+        model_type='smplx',
+        gender='neutral',
+        use_face_contour=False,
+        use_pca=False,
+        ext='npz'
+    )
+
+    # Create pyrender scene
+    scene = pyrender.Scene(ambient_light=[0.3, 0.3, 0.3])
+
+    # Camera
+    camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0)
+    camera_pose = np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 1.5],
+        [0.0, 0.0, 1.0, 3.0],
+        [0.0, 0.0, 0.0, 1.0]
+    ])
+    scene.add(camera, pose=camera_pose)
+
+    # Lights
+    light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
+    scene.add(light, pose=camera_pose)
+
+    # Colors for each level
+    colors = [
+        [0.8, 0.3, 0.3, 1.0],  # Red - Level 1
+        [0.3, 0.8, 0.3, 1.0],  # Green - Level 1+2
+        [0.3, 0.3, 0.8, 1.0],  # Blue - Level 1+2+3 (full)
+    ]
+
+    titles = ["Level 1", "Level 1+2", "Level 1+2+3 (Full)"]
+    spacing = 1.5  # Spacing between avatars
+
+    # Add each level's avatar
+    for level_idx, (pose_params, color, title) in enumerate(zip(poses_by_level, colors, titles)):
+        # Parse pose parameters
+        global_orient = torch.FloatTensor(pose_params[:3]).unsqueeze(0)
+        body_pose = torch.FloatTensor(pose_params[3:66]).unsqueeze(0)
+        jaw_pose = torch.FloatTensor(pose_params[66:69]).unsqueeze(0)
+        leye_pose = torch.FloatTensor(pose_params[69:72]).unsqueeze(0)
+        reye_pose = torch.FloatTensor(pose_params[72:75]).unsqueeze(0)
+        left_hand_pose = torch.FloatTensor(pose_params[75:120]).unsqueeze(0)
+        right_hand_pose = torch.FloatTensor(pose_params[120:165]).unsqueeze(0)
+
+        # SMPLX forward pass
+        with torch.no_grad():
+            output = smplx_model(
+                global_orient=global_orient,
+                body_pose=body_pose,
+                jaw_pose=jaw_pose,
+                leye_pose=leye_pose,
+                reye_pose=reye_pose,
+                left_hand_pose=left_hand_pose,
+                right_hand_pose=right_hand_pose,
+                return_verts=True
+            )
+
+        vertices = output.vertices[0].cpu().numpy()
+        faces = smplx_model.faces
+
+        # Create mesh
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+        mesh.visual.vertex_colors = color
+
+        # Offset horizontally
+        offset_x = (level_idx - 1) * spacing
+        mesh.apply_translation([offset_x, 0, 0])
+
+        # Add to scene
+        mesh_pyrender = pyrender.Mesh.from_trimesh(mesh, smooth=False)
+        scene.add(mesh_pyrender)
+
+        # Add text marker above avatar
+        marker_pos = [offset_x, 2.0, 0]
+        marker_mesh = trimesh.creation.icosphere(radius=0.05)
+        marker_mesh.visual.vertex_colors = color
+        marker_mesh.apply_translation(marker_pos)
+        scene.add(pyrender.Mesh.from_trimesh(marker_mesh))
+
+        print(f"  Added {title}: {color[:3]}")
+
+    # Render
+    viewer = pyrender.Viewer(scene, use_raymond_lighting=True, run_in_thread=False)
+
+    print("✓ Visualization complete!")
+
+
+
 
 
 @torch.no_grad()
@@ -196,7 +328,7 @@ def main():
                        help='Use best.pt checkpoints instead of latest')
 
     # Sampling
-    parser.add_argument('--num-samples', type=int, default=16,
+    parser.add_argument('--num-samples', type=int, default=1,
                        help='Number of samples to generate')
     parser.add_argument('--temperature', type=float, default=1.0,
                        help='Sampling temperature (0.8-1.2 recommended)')
@@ -210,6 +342,12 @@ def main():
     # Output
     parser.add_argument('--output', type=str, default='generated_poses_with_prior.npz',
                        help='Output file for generated poses')
+    parser.add_argument('--visualize', action='store_true',
+                       help='Visualize hierarchical levels after sampling')
+    parser.add_argument('--sample-idx', type=int, default=0,
+                       help='Which sample to visualize (0 to num_samples-1)')
+    parser.add_argument('--frame-idx', type=int, default=0,
+                       help='Which frame to visualize (0 to 24)')
 
     args = parser.parse_args()
 
@@ -291,13 +429,29 @@ def main():
     )
     print(f"   ✓ Saved to: {args.output}")
 
+    # Visualize if requested
+    if args.visualize:
+        print("\n5. Visualizing hierarchical levels...")
+        print(f"   Sample: {args.sample_idx}/{args.num_samples-1}")
+        print(f"   Frame: {args.frame_idx}/24")
+        visualize_hierarchical_levels(
+            vqvae_model,
+            codes_all,
+            sample_idx=args.sample_idx,
+            frame_idx=args.frame_idx
+        )
+
     print("\n" + "="*60)
     print("SAMPLING COMPLETE!")
     print("="*60)
     print(f"Generated {args.num_samples} poses")
     print(f"Temperature: {args.temperature}")
-    print(f"\nVisualize with:")
-    print(f"  python visualize_pose_comparison.py --sample-file {args.output}")
+    if args.visualize:
+        print(f"Visualization shown for sample {args.sample_idx}, frame {args.frame_idx}")
+    else:
+        print(f"\nVisualize with:")
+        print(f"  python visualize_pose_comparison.py --sample-file {args.output}")
+        print(f"Or run with --visualize flag to see hierarchical levels")
 
 
 if __name__ == '__main__':

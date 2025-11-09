@@ -250,8 +250,14 @@ def train_single_level(level, args):
     print(f"   Batch size: {args.batch_size}")
     print(f"   Learning rate: {args.lr}")
     print(f"   Save directory: {level_dir}")
+    if args.patience > 0:
+        print(f"   Early stopping: enabled (patience={args.patience})")
+    else:
+        print(f"   Early stopping: disabled")
 
     best_loss = float('inf')
+    epochs_without_improvement = 0
+    best_model_state = None
 
     for epoch in range(args.epochs):
         # Train
@@ -276,6 +282,19 @@ def train_single_level(level, args):
         is_best = avg_loss < best_loss
         if is_best:
             best_loss = avg_loss
+            epochs_without_improvement = 0
+            # Save best model state for early stopping
+            if args.patience > 0:
+                best_model_state = {
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict(),
+                    'epoch': epoch,
+                    'loss': avg_loss,
+                    'accuracy': avg_acc
+                }
+        else:
+            epochs_without_improvement += 1
 
         if (epoch + 1) % args.save_every == 0 or is_best:
             checkpoint = {
@@ -299,15 +318,37 @@ def train_single_level(level, args):
                 torch.save(checkpoint, best_path)
                 print(f"  New best model! Loss: {best_loss:.4f}")
 
+        # Early stopping check
+        if args.patience > 0 and epochs_without_improvement >= args.patience:
+            print(f"\n⚠️  Early stopping triggered after {epoch+1} epochs")
+            print(f"   No improvement for {args.patience} epochs")
+            print(f"   Best loss: {best_loss:.4f} at epoch {epoch+1-epochs_without_improvement}")
+            # Restore best model
+            if best_model_state is not None:
+                model.load_state_dict(best_model_state['model'])
+                optimizer.load_state_dict(best_model_state['optimizer'])
+                scheduler.load_state_dict(best_model_state['scheduler'])
+                print(f"   Restored best model from epoch {best_model_state['epoch']+1}")
+            break
+
     writer.close()
 
     print("\n" + "="*60)
     print(f"LEVEL {level} TRAINING COMPLETE!")
     print("="*60)
     print(f"Best loss: {best_loss:.4f}")
+    print(f"Total epochs: {epoch+1}/{args.epochs}")
+    if args.patience > 0 and epochs_without_improvement >= args.patience:
+        print(f"Early stopped: Yes (saved {args.epochs - (epoch+1)} epochs)")
     print(f"Checkpoints saved to: {level_dir}")
 
-    return {'level': level, 'best_loss': best_loss, 'final_acc': avg_acc}
+    return {
+        'level': level,
+        'best_loss': best_loss,
+        'final_acc': avg_acc,
+        'epochs_trained': epoch + 1,
+        'early_stopped': args.patience > 0 and epochs_without_improvement >= args.patience
+    }
 
 
 def main():
@@ -339,11 +380,15 @@ def main():
     parser.add_argument('--batch-size', type=int, default=32,
                        help='Batch size')
     parser.add_argument('--epochs', type=int, default=100,
-                       help='Number of epochs')
+                       help='Number of epochs (max if early stopping enabled)')
     parser.add_argument('--lr', type=float, default=3e-4,
                        help='Learning rate')
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device (cuda or cpu)')
+
+    # Early stopping
+    parser.add_argument('--patience', type=int, default=20,
+                       help='Early stopping patience (epochs without improvement, -1 to disable)')
 
     # Sequence shape
     parser.add_argument('--seq-height', type=int, default=5,
@@ -386,6 +431,9 @@ def main():
         print(f"\nLevel {result['level']}:")
         print(f"  Best loss: {result['best_loss']:.4f}")
         print(f"  Final accuracy: {result['final_acc']:.4f}")
+        print(f"  Epochs trained: {result['epochs_trained']}")
+        if result['early_stopped']:
+            print(f"  Early stopped: Yes")
 
     print(f"\nCheckpoints saved to: {args.save_dir}")
 

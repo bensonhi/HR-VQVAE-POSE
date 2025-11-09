@@ -20,6 +20,9 @@ amp=None
 sample_period = 1
 sampler = vqvae_sampler
 
+# Early stopping: -1 to disable, positive number for patience (epochs without improvement)
+patience = 30  # Default: stop if no improvement for 30 epochs
+
 # ===== Progressive Training Configuration =====
 # Set to True to enable progressive training with level-specific losses:
 #   - Level 1: Focus on body pose (global_orient + body)
@@ -83,5 +86,6 @@ train(
        use_progressive=use_progressive,
        level_1_weight=level_1_weight,
        level_2_weight=level_2_weight,
-       level_3_weight=level_3_weight)
+       level_3_weight=level_3_weight,
+       patience=patience)
 
