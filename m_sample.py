@@ -3,6 +3,7 @@ import sys
 sys.path.append('../')
 
 import torch
+import numpy as np
 from torchvision.utils import save_image
 from m_util import get_runtime_sampler_path
 from torchvision import utils
@@ -101,3 +102,49 @@ def make_sample(model_vqvae, model_top, model_middle, model_bottom, file_path, b
 
     save_image(decoded_sample, file_path,
                normalize=True, range=(-1, 1))
+
+@torch.no_grad()
+def extract_codes_from_poses(model, poses, device='cuda'):
+    """
+    Extract discrete latent codes from poses.
+
+    Useful for:
+    - Analyzing what codes the model uses
+    - Training a prior model (PixelSNAIL)
+    - Code manipulation/editing
+
+    Args:
+        model: VQ-VAE model
+        poses: (batch, seq_len, 165) pose parameters
+        device: Device to use
+
+    Returns:
+        codes: List of code tensors [code_L1, code_L2, ..., code_Ln]
+               Each has shape (batch, seq_len)
+        code_usage: Dictionary with statistics about code usage per level
+    """
+    model.eval()
+
+    # Get actual model (unwrap DataParallel if needed)
+    actual_model = model.module if hasattr(model, 'module') else model
+
+    poses = poses.to(device)
+
+    # Encode to get discrete codes
+    _, _, ids = actual_model.encode(poses.transpose(1, 2))
+
+    # Compute code usage statistics
+    code_usage = {}
+    for i, level_ids in enumerate(ids):
+        n_embed = actual_model.quantizes[i].n_embed
+        unique_codes, counts = torch.unique(level_ids, return_counts=True)
+
+        code_usage[f'level_{i+1}'] = {
+            'n_embed': n_embed,
+            'n_unique': len(unique_codes),
+            'usage_rate': len(unique_codes) / n_embed,
+            'unique_codes': unique_codes.cpu().numpy(),
+            'counts': counts.cpu().numpy()
+        }
+
+    return ids, code_usage

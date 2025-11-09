@@ -1,6 +1,8 @@
 import sys
 sys.path.append('../')
 import torch
+import os
+import glob
 from m_vqvae import VQVAE_1
 from m_vqvae_multi_level import VQVAE_ML
 from m_vqvae_pose import VQVAE_Pose_1, VQVAE_Pose_ML
@@ -114,6 +116,60 @@ def get_runtime_sampler_path(folder_name, dataset_name, run_num, epoch):
         file_path += '{}/'.format(folder_name)
     file_path += 'runtime_samples/{}'.format(*[str(epoch + 1).zfill(5)])
     return file_path
+
+
+def find_latest_checkpoint(dataset_name='beat2_poses', run_num=0, folder_name='vqvae'):
+    """
+    Find the latest checkpoint file for a given dataset/run/folder.
+
+    Args:
+        dataset_name: Dataset name (default: 'beat2_poses')
+        run_num: Run number (default: 0)
+        folder_name: Folder name (default: 'vqvae')
+
+    Returns:
+        Path to latest checkpoint, or None if no checkpoints found
+    """
+    model_type = get_model_type(folder_name)
+    checkpoint_dir = 'checkpoint/{}/{}/{}/'.format(dataset_name, run_num, model_type)
+
+    # Look for .pt files
+    pattern = os.path.join(checkpoint_dir, '*.pt')
+    checkpoints = glob.glob(pattern)
+
+    if not checkpoints:
+        return None
+
+    # Sort by modification time (most recent first)
+    checkpoints.sort(key=os.path.getmtime, reverse=True)
+
+    return checkpoints[0]
+
+
+def load_checkpoint(checkpoint_path, device='cpu'):
+    """
+    Load a checkpoint and remove DataParallel 'module.' prefix if present.
+
+    Args:
+        checkpoint_path: Path to checkpoint file
+        device: Device to load to
+
+    Returns:
+        state_dict: Clean state dict without 'module.' prefix
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    # Extract state dict
+    if isinstance(checkpoint, dict) and 'model' in checkpoint:
+        state_dict = checkpoint['model']
+    else:
+        state_dict = checkpoint
+
+    # Remove 'module.' prefix if present (from DataParallel)
+    if state_dict and list(state_dict.keys())[0].startswith('module.'):
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+    return state_dict
 
 
 def conf_parser(dataset, n_run, folder_name):
