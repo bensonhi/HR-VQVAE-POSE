@@ -112,15 +112,15 @@ def visualize_hierarchical_levels(vqvae_model, codes_all, sample_idx=0, frame_id
 
     # Level 1 only
     pose_l1 = actual_model.decode_code([codes_all[0]])
-    poses_by_level.append(pose_l1[sample_idx, frame_idx].cpu().numpy())
+    poses_by_level.append(pose_l1[sample_idx, frame_idx].detach().cpu().numpy())
 
     # Level 1 + 2
     pose_l2 = actual_model.decode_code([codes_all[0], codes_all[1]])
-    poses_by_level.append(pose_l2[sample_idx, frame_idx].cpu().numpy())
+    poses_by_level.append(pose_l2[sample_idx, frame_idx].detach().cpu().numpy())
 
     # Level 1 + 2 + 3 (full)
     pose_l3 = actual_model.decode_code(codes_all)
-    poses_by_level.append(pose_l3[sample_idx, frame_idx].cpu().numpy())
+    poses_by_level.append(pose_l3[sample_idx, frame_idx].detach().cpu().numpy())
 
     # Initialize SMPLX model
     smplx_model = smplx.create(
