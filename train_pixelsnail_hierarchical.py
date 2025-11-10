@@ -357,8 +357,8 @@ def main():
     # Data
     parser.add_argument('--codes', type=str, default='codes_dataset.npz',
                        help='Path to extracted codes file')
-    parser.add_argument('--level', type=int, required=True, choices=[-1, 1, 2, 3],
-                       help='Which level to train (1=top, 2=middle, 3=bottom, -1=all levels sequentially)')
+    parser.add_argument('--level', type=int, default=-1, choices=[-1, 1, 2, 3],
+                       help='Which level to train (1=top, 2=middle, 3=bottom, -1=all levels sequentially, default: -1)')
 
     # Model architecture
     parser.add_argument('--channel', type=int, default=128,
@@ -379,7 +379,7 @@ def main():
     # Training
     parser.add_argument('--batch-size', type=int, default=32,
                        help='Batch size')
-    parser.add_argument('--epochs', type=int, default=100,
+    parser.add_argument('--epochs', type=int, default=200,
                        help='Number of epochs (max if early stopping enabled)')
     parser.add_argument('--lr', type=float, default=3e-4,
                        help='Learning rate')

@@ -320,8 +320,8 @@ def main():
     parser = argparse.ArgumentParser(description='Sample poses using PixelSNAIL priors')
 
     # Models
-    parser.add_argument('--vqvae-checkpoint', type=str, required=True,
-                       help='Path to trained VQ-VAE checkpoint')
+    parser.add_argument('--vqvae-checkpoint', type=str, default=None,
+                       help='Path to trained VQ-VAE checkpoint (default: latest checkpoint)')
     parser.add_argument('--pixelsnail-dir', type=str, default='checkpoint/beat2_poses/0/pixelsnail',
                        help='Directory containing PixelSNAIL checkpoints')
     parser.add_argument('--use-best', action='store_true',
@@ -342,8 +342,8 @@ def main():
     # Output
     parser.add_argument('--output', type=str, default='generated_poses_with_prior.npz',
                        help='Output file for generated poses')
-    parser.add_argument('--visualize', action='store_true',
-                       help='Visualize hierarchical levels after sampling')
+    parser.add_argument('--no-visualize', action='store_false', dest='visualize', default=True,
+                       help='Disable visualization (visualization enabled by default)')
     parser.add_argument('--sample-idx', type=int, default=0,
                        help='Which sample to visualize (0 to num_samples-1)')
     parser.add_argument('--frame-idx', type=int, default=0,
@@ -354,6 +354,17 @@ def main():
     print("="*60)
     print("SAMPLING WITH PIXELSNAIL PRIORS")
     print("="*60)
+
+    # Find VQ-VAE checkpoint if not specified
+    if args.vqvae_checkpoint is None:
+        print("\n0. Finding latest VQ-VAE checkpoint...")
+        from m_util import find_latest_checkpoint
+        args.vqvae_checkpoint = find_latest_checkpoint(dataset_name='beat2_poses', run_num=0, folder_name='vqvae')
+        if args.vqvae_checkpoint is None:
+            print("   ✗ No VQ-VAE checkpoints found!")
+            print("   Please train a VQ-VAE model first or specify --vqvae-checkpoint manually")
+            return
+        print(f"   ✓ Found latest checkpoint: {args.vqvae_checkpoint}")
 
     # Load VQ-VAE
     print("\n1. Loading VQ-VAE...")
