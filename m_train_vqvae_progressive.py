@@ -1,219 +1,244 @@
 import torch
 from torch import nn
 from tqdm import tqdm
+from m_smplx_layer import SMPLX_JOINT_INDICES, SMPLX_VERTEX_INDICES
 
 
 # ============================================================================
-# SMPLX body part definitions (165D pose)
+# SMPLX body part definitions (165D axis-angle pose)
 # ============================================================================
-BODY_PARTS = {
-    'global_orient': (0, 3),
-    'body': (3, 66),           # Main body pose (21 joints × 3)
-    'jaw': (66, 69),
-    'eyes': (69, 75),          # Left and right eyes
-    'hands': (75, 165),        # Both hands (left: 75-120, right: 120-165)
-    'face': (66, 75),          # Jaw + eyes combined
+BODY_PARTS_POSE = {
+    'face': (66, 75),          # Jaw (66-69) + eyes (69-75)
+    'body': (0, 66),           # Global orient (0-3) + body pose (3-66)
+    'hands': (75, 165),        # Left hand (75-120) + right hand (120-165)
 }
 
 
 # ============================================================================
-# MODULAR LOSS CONFIGURATION
-# ============================================================================
-# Define which losses to apply at each level
-# Available loss types:
-#   - 'axis_angle': MSE loss on axis-angle pose parameters (specify body parts)
-#   - 'mesh': MSE loss on SMPLX mesh vertices
-#   - 'joint': MSE loss on SMPLX joint positions
-#
-# Each loss is a dict with:
-#   - 'type': Loss type ('axis_angle', 'mesh', 'joint')
-#   - 'weight': Relative weight for this loss component
-#   - 'parts': (for axis_angle only) List of body part names from BODY_PARTS
-#   - 'name': Descriptive name for logging
+# Helper Functions for Body Part Geometry Extraction
 # ============================================================================
 
-LEVEL_1_LOSSES = [
-    {
-        'type': 'axis_angle',
-        'parts': ['face'],  # jaw + eyes
-        'weight': 1.0,
-        'name': 'face'
-    }
-]
-
-LEVEL_2_LOSSES = [
-    {
-        'type': 'axis_angle',
-        'parts': ['body'],  # Main body pose (21 joints)
-        'weight': 1.0,
-        'name': 'body'
-    }
-]
-
-LEVEL_3_LOSSES = [
-    {
-        'type': 'axis_angle',
-        'parts': ['hands'],  # Both hands
-        'weight': 1.0,
-        'name': 'hands'
-    },
-    {
-        'type': 'mesh',
-        'weight': 1.0,
-        'name': 'mesh'
-    },
-    {
-        'type': 'joint',
-        'weight': 1.0,
-        'name': 'joint'
-    }
-]
-
-# Aggregate all level loss configurations
-LEVEL_LOSS_CONFIGS = [LEVEL_1_LOSSES, LEVEL_2_LOSSES, LEVEL_3_LOSSES]
-
-
-# ============================================================================
-# LOSS COMPUTATION HELPER
-# ============================================================================
-def compute_level_loss(loss_config, level_output, gt_poses, pred_vertices, pred_joints,
-                       gt_vertices, gt_joints, criterion, device):
+def extract_body_part_geometry(vertices, joints, part_name):
     """
-    Compute loss for a given level based on its loss configuration.
+    Extract vertices and joints for a specific body part.
 
     Args:
-        loss_config: List of loss dicts for this level (from LEVEL_LOSS_CONFIGS)
+        vertices: (batch, seq_len, num_vertices, 3) or None
+        joints: (batch, seq_len, num_joints, 3) or None
+        part_name: 'face', 'body', or 'hands'
+
+    Returns:
+        part_vertices: Vertices for this body part
+        part_joints: Joints for this body part
+    """
+    if vertices is not None:
+        vertex_indices = SMPLX_VERTEX_INDICES[part_name]
+        part_vertices = vertices[:, :, vertex_indices, :]
+    else:
+        part_vertices = None
+
+    if joints is not None:
+        joint_indices = SMPLX_JOINT_INDICES[part_name]
+        part_joints = joints[:, :, joint_indices, :]
+    else:
+        part_joints = None
+
+    return part_vertices, part_joints
+
+
+# ============================================================================
+# Loss Computation Functions
+# ============================================================================
+
+def compute_level_local_loss(level_output, gt_poses, pred_vertices, pred_joints,
+                             gt_vertices, gt_joints, part_name, criterion, device):
+    """
+    Compute local loss for a specific level on a specific body part.
+    This loss will be applied WITH stop_gradient (detached intermediate output).
+
+    Args:
         level_output: Reconstructed poses at this level (batch, seq_len, 165)
         gt_poses: Ground truth poses (batch, seq_len, 165)
-        pred_vertices: Predicted SMPLX vertices (batch, seq_len, 10475, 3) or None
-        pred_joints: Predicted SMPLX joints (batch, seq_len, 127, 3) or None
+        pred_vertices: Predicted SMPLX vertices (batch, seq_len, num_vertices, 3) or None
+        pred_joints: Predicted SMPLX joints (batch, seq_len, num_joints, 3) or None
         gt_vertices: Ground truth vertices or None
         gt_joints: Ground truth joints or None
-        criterion: Loss function (e.g., nn.MSELoss())
+        part_name: 'face', 'body', or 'hands'
+        criterion: Loss function
         device: Device
 
     Returns:
-        total_loss: Combined loss for this level
-        loss_components: Dict of individual loss values for logging
+        total_local_loss: Combined local loss for this level
+        loss_dict: Dictionary of individual loss components
     """
-    total_loss = torch.tensor(0.0, device=device)
-    loss_components = {}
+    loss_dict = {}
+    total_local_loss = torch.tensor(0.0, device=device)
 
-    for loss_spec in loss_config:
-        loss_type = loss_spec['type']
-        weight = loss_spec['weight']
-        name = loss_spec['name']
+    # 1. Axis-angle loss on specific body part
+    start_idx, end_idx = BODY_PARTS_POSE[part_name]
+    axis_angle_loss = criterion(
+        level_output[:, :, start_idx:end_idx],
+        gt_poses[:, :, start_idx:end_idx]
+    )
+    total_local_loss += axis_angle_loss
+    loss_dict[f'axis_angle_{part_name}'] = axis_angle_loss.item()
 
-        if loss_type == 'axis_angle':
-            # Compute MSE on specific body parts
-            parts = loss_spec['parts']
+    # 2. Mesh (vertices) loss on specific body part
+    if pred_vertices is not None and gt_vertices is not None:
+        pred_part_verts, _ = extract_body_part_geometry(pred_vertices, None, part_name)
+        gt_part_verts, _ = extract_body_part_geometry(gt_vertices, None, part_name)
 
-            # Collect indices for all specified parts
-            indices = []
-            for part_name in parts:
-                if part_name not in BODY_PARTS:
-                    raise ValueError(f"Unknown body part: {part_name}")
-                start, end = BODY_PARTS[part_name]
-                indices.extend(range(start, end))
+        mesh_loss = criterion(pred_part_verts, gt_part_verts)
+        total_local_loss += mesh_loss
+        loss_dict[f'mesh_{part_name}'] = mesh_loss.item()
+    else:
+        loss_dict[f'mesh_{part_name}'] = 0.0
 
-            # Convert to tensor for advanced indexing
-            indices = torch.tensor(indices, device=device)
+    # 3. Joint position loss on specific body part
+    if pred_joints is not None and gt_joints is not None:
+        _, pred_part_joints = extract_body_part_geometry(None, pred_joints, part_name)
+        _, gt_part_joints = extract_body_part_geometry(None, gt_joints, part_name)
 
-            # Compute loss on selected dimensions
-            loss = criterion(
-                level_output[:, :, indices],
-                gt_poses[:, :, indices]
-            )
+        joint_loss = criterion(pred_part_joints, gt_part_joints)
+        total_local_loss += joint_loss
+        loss_dict[f'joint_{part_name}'] = joint_loss.item()
+    else:
+        loss_dict[f'joint_{part_name}'] = 0.0
 
-            total_loss += weight * loss
-            loss_components[name] = loss.item()
-
-        elif loss_type == 'mesh':
-            # Compute MSE on mesh vertices
-            if pred_vertices is None or gt_vertices is None:
-                # Skip if geometry not available
-                loss = torch.tensor(0.0, device=device)
-            else:
-                loss = criterion(pred_vertices, gt_vertices)
-                total_loss += weight * loss
-
-            loss_components[name] = loss.item()
-
-        elif loss_type == 'joint':
-            # Compute MSE on joint positions
-            if pred_joints is None or gt_joints is None:
-                # Skip if geometry not available
-                loss = torch.tensor(0.0, device=device)
-            else:
-                loss = criterion(pred_joints, gt_joints)
-                total_loss += weight * loss
-
-            loss_components[name] = loss.item()
-
-        else:
-            raise ValueError(f"Unknown loss type: {loss_type}")
-
-    return total_loss, loss_components
+    return total_local_loss, loss_dict
 
 
-def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, run_num,
+def compute_global_loss(final_output, gt_poses, pred_vertices, pred_joints,
+                       gt_vertices, gt_joints, criterion, device,
+                       pose_weight=1.0, mesh_weight=1.0, joint_weight=1.0):
+    """
+    Compute global losses that backpropagate through all levels.
+    Applied to the final output (after all 3 levels).
+
+    Args:
+        final_output: Final reconstructed poses (batch, seq_len, 165)
+        gt_poses: Ground truth poses
+        pred_vertices: Predicted vertices (full mesh)
+        pred_joints: Predicted joints (all joints)
+        gt_vertices: Ground truth vertices
+        gt_joints: Ground truth joints
+        criterion: Loss function
+        device: Device
+        pose_weight: Weight for pose loss
+        mesh_weight: Weight for mesh loss
+        joint_weight: Weight for joint loss
+
+    Returns:
+        total_global_loss: Combined global loss
+        loss_dict: Dictionary of individual loss components
+    """
+    loss_dict = {}
+    total_global_loss = torch.tensor(0.0, device=device)
+
+    # 1. Full axis-angle reconstruction loss
+    pose_loss = criterion(final_output, gt_poses)
+    total_global_loss += pose_weight * pose_loss
+    loss_dict['global_axis_angle'] = pose_loss.item()
+
+    # 2. Full mesh reconstruction loss
+    if pred_vertices is not None and gt_vertices is not None:
+        mesh_loss = criterion(pred_vertices, gt_vertices)
+        total_global_loss += mesh_weight * mesh_loss
+        loss_dict['global_mesh'] = mesh_loss.item()
+    else:
+        loss_dict['global_mesh'] = 0.0
+
+    # 3. Full joint reconstruction loss
+    if pred_joints is not None and gt_joints is not None:
+        joint_loss = criterion(pred_joints, gt_joints)
+        total_global_loss += joint_weight * joint_loss
+        loss_dict['global_joint'] = joint_loss.item()
+    else:
+        loss_dict['global_joint'] = 0.0
+
+    return total_global_loss, loss_dict
+
+
+# ============================================================================
+# Main Training Function
+# ============================================================================
+
+def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, sampler,
+                     optimizer, scheduler, device, dataset_name, run_num,
                      use_smplx_loss=False, pose_loss_weight=1.0, vertex_loss_weight=1.0, joint_loss_weight=1.0,
                      level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
                      level_loss_configs=None):
     """
-    Progressive training loop with modular level-specific losses.
+    Progressive training with stop gradients between levels and global losses.
 
-    Loss configuration is defined by LEVEL_LOSS_CONFIGS at the top of this file.
-    You can customize which losses apply to each level by modifying:
-    - LEVEL_1_LOSSES
-    - LEVEL_2_LOSSES
-    - LEVEL_3_LOSSES
+    NEW LOSS STRUCTURE:
+    -------------------
+    Level 1 (WITH STOP_GRAD):
+        - axis_angle(face)
+        - mesh(face)
+        - joint_position(face)
+
+    Level 2 (WITH STOP_GRAD):
+        - axis_angle(body)
+        - mesh(body)
+        - joint_position(body)
+
+    Level 3 (WITH STOP_GRAD):
+        - axis_angle(hands)
+        - mesh(hands)
+        - joint_position(hands)
+
+    Global (BACKPROP THROUGH ALL LEVELS):
+        - axis_angle(full pose)
+        - mesh(full mesh)
+        - joint_position(all joints)
 
     Args:
         folder_name: Model folder name
         epoch_num: Current epoch number
         loader: DataLoader
-        model: VQ-VAE model (must support return_intermediate=True)
+        model: VQ-VAE model with multi-level architecture
         writer: TensorBoard writer
         do_sample: Whether to sample this epoch
         sampler: Sampling function
         optimizer: Optimizer
         scheduler: Learning rate scheduler
-        device: Device (cuda/cpu)
+        device: Device
         dataset_name: Dataset name
         run_num: Run number
         use_smplx_loss: Whether to use SMPLX geometry losses
-        pose_loss_weight: DEPRECATED - use loss configs instead
-        vertex_loss_weight: DEPRECATED - use loss configs instead
-        joint_loss_weight: DEPRECATED - use loss configs instead
-        level_1_weight: Overall weight multiplier for level 1 loss (default: 1.0)
-        level_2_weight: Overall weight multiplier for level 2 loss (default: 1.0)
-        level_3_weight: Overall weight multiplier for level 3 loss (default: 1.0)
-        level_loss_configs: Custom loss configs (defaults to LEVEL_LOSS_CONFIGS)
+        pose_loss_weight: Weight for global pose loss (default: 1.0)
+        vertex_loss_weight: Weight for global mesh loss (default: 1.0)
+        joint_loss_weight: Weight for global joint loss (default: 1.0)
+        level_1_weight: Weight for level 1 local loss (default: 1.0)
+        level_2_weight: Weight for level 2 local loss (default: 1.0)
+        level_3_weight: Weight for level 3 local loss (default: 1.0)
+        level_loss_configs: Ignored (kept for backward compatibility)
     """
-    # Use default configs if none provided
-    if level_loss_configs is None:
-        level_loss_configs = LEVEL_LOSS_CONFIGS
-
-    # Note: pose_loss_weight, vertex_loss_weight, joint_loss_weight are deprecated.
-    # Adjust weights in the LEVEL_LOSS_CONFIGS at the top of this file instead.
     loader = tqdm(loader)
 
     criterion = nn.MSELoss()
     latent_loss_weight = 0.25
 
-    # Initialize loss tracking for all levels and their components
-    n_levels = len(level_loss_configs)
-    level_loss_sums = [0.0 for _ in range(n_levels)]
-    # Track individual loss components for detailed logging
-    level_component_sums = [{} for _ in range(n_levels)]
-    total_loss_sum = 0
+    # Track losses
+    level_1_loss_sum = 0.0
+    level_2_loss_sum = 0.0
+    level_3_loss_sum = 0.0
+    global_loss_sum = 0.0
+    total_loss_sum = 0.0
+
+    # Track individual components for detailed logging
+    level_1_components = {}
+    level_2_components = {}
+    level_3_components = {}
+    global_components = {}
+
     mse_n = 0
 
     for i, (data, label) in enumerate(loader):
         model.zero_grad()
 
-        # Handle dict-based data loader (with ground truth geometry)
+        # Handle dict-based data loader
         if isinstance(data, dict):
             poses = data['poses'].to(device)  # (batch, seq_len, 165)
             gt_joints = data.get('gt_joints', None)
@@ -224,12 +249,12 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             if gt_vertices is not None:
                 gt_vertices = gt_vertices.to(device)
         else:
-            # Legacy format (backward compatibility)
             poses = data.to(device)
             gt_joints = None
             gt_vertices = None
 
-        # Forward pass with intermediate outputs
+        # ==================== Forward Pass ====================
+        # Get intermediate outputs from all levels
         result = model(poses, compute_geometry=use_smplx_loss, return_intermediate=True)
 
         if use_smplx_loss:
@@ -238,99 +263,143 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             intermediate_outputs, latent_loss = result
             pred_vertices, pred_joints = None, None
 
-        # Ensure we have enough levels
-        if len(intermediate_outputs) < n_levels:
-            raise ValueError(f"Expected at least {n_levels} levels, got {len(intermediate_outputs)}")
+        # Extract outputs for each level
+        level_1_output = intermediate_outputs[0]  # After level 1 only
+        level_2_output = intermediate_outputs[1]  # After level 1+2
+        level_3_output = intermediate_outputs[2]  # After level 1+2+3 (final)
 
-        # ==================== Compute Losses for Each Level ====================
-        level_weights = [level_1_weight, level_2_weight, level_3_weight]
-        level_losses = []
-        level_components_list = []
+        # ==================== Level 1 Loss (STOP GRADIENT) ====================
+        # Detach to stop gradient propagation to encoder
+        level_1_detached = level_1_output.detach()
 
-        for level_idx in range(n_levels):
-            level_output = intermediate_outputs[level_idx]
-            loss_config = level_loss_configs[level_idx]
+        # Compute geometry for level 1 output
+        pred_verts_l1, pred_joints_l1 = None, None
+        if use_smplx_loss:
+            # Get SMPLX layer from model (handle DataParallel wrapper)
+            smplx_layer = model.module.smplx_layer if hasattr(model, 'module') else model.smplx_layer
+            if smplx_layer is not None:
+                pred_verts_l1, pred_joints_l1 = smplx_layer(level_1_detached)
 
-            # Compute loss for this level using the modular loss configuration
-            level_loss, loss_components = compute_level_loss(
-                loss_config=loss_config,
-                level_output=level_output,
-                gt_poses=poses,
-                pred_vertices=pred_vertices,
-                pred_joints=pred_joints,
-                gt_vertices=gt_vertices,
-                gt_joints=gt_joints,
-                criterion=criterion,
-                device=device
-            )
+        level_1_local_loss, level_1_dict = compute_level_local_loss(
+            level_1_detached, poses, pred_verts_l1, pred_joints_l1,
+            gt_vertices, gt_joints, 'face', criterion, device
+        )
 
-            level_losses.append(level_loss)
-            level_components_list.append(loss_components)
+        # ==================== Level 2 Loss (STOP GRADIENT) ====================
+        level_2_detached = level_2_output.detach()
+
+        # Compute geometry for level 2 output
+        pred_verts_l2, pred_joints_l2 = None, None
+        if use_smplx_loss:
+            smplx_layer = model.module.smplx_layer if hasattr(model, 'module') else model.smplx_layer
+            if smplx_layer is not None:
+                pred_verts_l2, pred_joints_l2 = smplx_layer(level_2_detached)
+
+        level_2_local_loss, level_2_dict = compute_level_local_loss(
+            level_2_detached, poses, pred_verts_l2, pred_joints_l2,
+            gt_vertices, gt_joints, 'body', criterion, device
+        )
+
+        # ==================== Level 3 Loss (STOP GRADIENT) ====================
+        level_3_detached = level_3_output.detach()
+
+        # Compute geometry for level 3 output
+        pred_verts_l3, pred_joints_l3 = None, None
+        if use_smplx_loss:
+            smplx_layer = model.module.smplx_layer if hasattr(model, 'module') else model.smplx_layer
+            if smplx_layer is not None:
+                pred_verts_l3, pred_joints_l3 = smplx_layer(level_3_detached)
+
+        level_3_local_loss, level_3_dict = compute_level_local_loss(
+            level_3_detached, poses, pred_verts_l3, pred_joints_l3,
+            gt_vertices, gt_joints, 'hands', criterion, device
+        )
+
+        # ==================== Global Loss (BACKPROP THROUGH ALL) ====================
+        # NO detach - this backprops through all levels
+        global_loss, global_dict = compute_global_loss(
+            level_3_output, poses, pred_vertices, pred_joints,
+            gt_vertices, gt_joints, criterion, device,
+            pose_weight=pose_loss_weight,
+            mesh_weight=vertex_loss_weight,
+            joint_weight=joint_loss_weight
+        )
 
         # ==================== Combine All Losses ====================
         latent_loss = latent_loss.mean()
 
-        # Weighted sum of all level losses
-        total_loss = sum(
-            level_weights[i] * level_losses[i]
-            for i in range(n_levels)
-        ) + latent_loss_weight * latent_loss
+        total_loss = (
+            level_1_weight * level_1_local_loss +
+            level_2_weight * level_2_local_loss +
+            level_3_weight * level_3_local_loss +
+            global_loss +
+            latent_loss_weight * latent_loss
+        )
 
-        # Backward pass
+        # ==================== Backward Pass ====================
         total_loss.backward()
 
         if scheduler is not None:
             scheduler.step()
         optimizer.step()
 
-        # Track metrics
+        # ==================== Track Metrics ====================
         batch_size = poses.shape[0]
 
-        # Track level losses
-        for level_idx in range(n_levels):
-            level_loss_sums[level_idx] += level_losses[level_idx].item() * batch_size
-
-            # Track individual components
-            for component_name, component_value in level_components_list[level_idx].items():
-                if component_name not in level_component_sums[level_idx]:
-                    level_component_sums[level_idx][component_name] = 0.0
-                level_component_sums[level_idx][component_name] += component_value * batch_size
-
+        level_1_loss_sum += level_1_local_loss.item() * batch_size
+        level_2_loss_sum += level_2_local_loss.item() * batch_size
+        level_3_loss_sum += level_3_local_loss.item() * batch_size
+        global_loss_sum += global_loss.item() * batch_size
         total_loss_sum += total_loss.item() * batch_size
         mse_n += batch_size
 
-        lr = optimizer.param_groups[0]['lr']
+        # Track components
+        for k, v in level_1_dict.items():
+            level_1_components[k] = level_1_components.get(k, 0.0) + v * batch_size
+        for k, v in level_2_dict.items():
+            level_2_components[k] = level_2_components.get(k, 0.0) + v * batch_size
+        for k, v in level_3_dict.items():
+            level_3_components[k] = level_3_components.get(k, 0.0) + v * batch_size
+        for k, v in global_dict.items():
+            global_components[k] = global_components.get(k, 0.0) + v * batch_size
 
-        # Compute running averages for display
-        avg_level_losses = [level_loss_sums[i] / mse_n for i in range(n_levels)]
+        # ==================== Progress Bar ====================
+        lr = optimizer.param_groups[0]['lr']
+        avg_l1 = level_1_loss_sum / mse_n
+        avg_l2 = level_2_loss_sum / mse_n
+        avg_l3 = level_3_loss_sum / mse_n
+        avg_global = global_loss_sum / mse_n
         avg_total = total_loss_sum / mse_n
 
-        # Build progress bar description with dynamic loss names
-        desc = f'epoch: {epoch_num + 1}; '
-
-        for level_idx in range(n_levels):
-            # Get component names for this level
-            component_names = [loss_spec['name'] for loss_spec in level_loss_configs[level_idx]]
-            components_str = '+'.join(component_names)
-            desc += f'L{level_idx + 1}({components_str}): {avg_level_losses[level_idx]:.5f}; '
-
-        desc += f'total: {avg_total:.5f}; lr: {lr:.5f}'
+        desc = (
+            f'epoch: {epoch_num + 1}; '
+            f'L1(face): {avg_l1:.5f}; '
+            f'L2(body): {avg_l2:.5f}; '
+            f'L3(hands): {avg_l3:.5f}; '
+            f'Global: {avg_global:.5f}; '
+            f'Total: {avg_total:.5f}; '
+            f'lr: {lr:.5f}'
+        )
         loader.set_description(desc)
 
-    # Log to TensorBoard
+    # ==================== TensorBoard Logging ====================
     writer.add_scalar('Loss/total', total_loss_sum / mse_n, epoch_num)
+    writer.add_scalar('Loss/level_1_total', level_1_loss_sum / mse_n, epoch_num)
+    writer.add_scalar('Loss/level_2_total', level_2_loss_sum / mse_n, epoch_num)
+    writer.add_scalar('Loss/level_3_total', level_3_loss_sum / mse_n, epoch_num)
+    writer.add_scalar('Loss/global_total', global_loss_sum / mse_n, epoch_num)
 
-    # Log level-specific losses
-    for level_idx in range(n_levels):
-        avg_level_loss = level_loss_sums[level_idx] / mse_n
-        writer.add_scalar(f'Loss/level_{level_idx + 1}_total', avg_level_loss, epoch_num)
+    # Log individual components
+    for k, v in level_1_components.items():
+        writer.add_scalar(f'Loss/level_1_{k}', v / mse_n, epoch_num)
+    for k, v in level_2_components.items():
+        writer.add_scalar(f'Loss/level_2_{k}', v / mse_n, epoch_num)
+    for k, v in level_3_components.items():
+        writer.add_scalar(f'Loss/level_3_{k}', v / mse_n, epoch_num)
+    for k, v in global_components.items():
+        writer.add_scalar(f'Loss/{k}', v / mse_n, epoch_num)
 
-        # Log individual components
-        for component_name, component_sum in level_component_sums[level_idx].items():
-            avg_component = component_sum / mse_n
-            writer.add_scalar(f'Loss/level_{level_idx + 1}_{component_name}', avg_component, epoch_num)
-
-    # Sample if needed (use final output)
+    # Sample if needed
     if do_sample:
         sampler(folder_name, model, poses, dataset_name, run_num, epoch_num, poses.shape[0])
 

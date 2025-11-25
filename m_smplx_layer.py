@@ -4,6 +4,33 @@ import smplx
 import numpy as np
 
 
+# SMPLX body part joint indices (127 joints total in SMPLX)
+# Reference: SMPLX joint naming convention
+SMPLX_JOINT_INDICES = {
+    # Face: head, neck, jaw, eyes (joints 12, 15, 22, 23)
+    'face': [12, 15, 22, 23],
+
+    # Body: pelvis, spine, shoulders, hips, legs (joints 0-21 excluding face)
+    'body': list(range(0, 12)) + [13, 14] + list(range(16, 22)),
+
+    # Hands: finger joints (25-54 for left hand, 55-84 for right hand in some configurations)
+    # This is approximate - adjust based on your SMPLX model configuration
+    'hands': list(range(25, 55)) + list(range(55, 85)) if 85 <= 127 else list(range(25, min(55, 127))),
+
+    # For more granular control
+    'left_hand': list(range(25, 40)),
+    'right_hand': list(range(40, 55)),
+}
+
+# Note: Vertex indices are mesh-specific. SMPLX has ~10,475 vertices.
+# These are rough approximations - ideally use a proper segmentation
+SMPLX_VERTEX_INDICES = {
+    'face': list(range(0, 2000)),  # Approximate head region
+    'body': list(range(2000, 7000)),  # Approximate torso/limbs
+    'hands': list(range(7000, 10475)),  # Approximate hand regions
+}
+
+
 class SMPLXLayer(nn.Module):
     """
     Differentiable SMPLX layer for pose to mesh/joints conversion.
