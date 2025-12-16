@@ -272,7 +272,7 @@ def visualize_multilevel_comparison(sample_file):
 def main():
     parser = argparse.ArgumentParser(description='Visualize multi-level VQ-VAE samples')
     parser.add_argument('--sample-file', type=str,
-                       default='checkpoint/beat2_poses/0/vqvae/runtime_samples/00001.npz',
+                       default='checkpoint/beat2_poses/0/vqvae/runtime_samples/00002_new_structure_loss.npz',
                        help='Path to sample .npz file')
 
     args = parser.parse_args()

@@ -29,6 +29,8 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
     loader = tqdm(loader)
 
     criterion = nn.MSELoss()
+    # latent_loss_weight: For VAE, this weights the KL divergence loss (beta in beta-VAE)
+    # For VQ-VAE, this was the quantization (codebook) loss weight
     latent_loss_weight = 0.25
 
     # Track losses
@@ -95,6 +97,7 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
             joint_recon_loss = criterion(pred_joints, gt_joints)
 
         # Combine losses
+        # latent_loss is KL divergence for VAE (or quantization loss for VQ-VAE)
         latent_loss = latent_loss.mean()
         total_loss = (pose_loss_weight * pose_recon_loss +
                      vertex_loss_weight * vertex_recon_loss +

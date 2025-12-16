@@ -86,9 +86,181 @@ def sample_pixelsnail(model, batch_size, seq_height, seq_width, device, conditio
     return codes.squeeze(1)  # (batch, height, width)
 
 
+def visualize_animated_sequence(vqvae_model, codes_all, sample_idx=0, fps=30, save_video=None):
+    """
+    Visualize a full pose sequence as an animation.
+
+    Args:
+        vqvae_model: Trained VQ-VAE model
+        codes_all: List of [codes_L1, codes_L2, codes_L3]
+        sample_idx: Which sample to visualize
+        fps: Frames per second for animation
+        save_video: If provided, save animation to this path (e.g., 'animation.mp4')
+    """
+    try:
+        import smplx
+    except ImportError:
+        print("⚠️  smplx not installed. Skipping visualization.")
+        print("   Install with: pip install smplx")
+        return
+
+    actual_model = vqvae_model.module if hasattr(vqvae_model, 'module') else vqvae_model
+
+    # Decode full sequence
+    print(f"\nGenerating animated sequence for sample {sample_idx}...")
+    poses_full = actual_model.decode_code(codes_all)
+    seq_len = poses_full.shape[1]
+    print(f"  Sequence length: {seq_len} frames")
+    print(f"  FPS: {fps}")
+
+    # Initialize SMPLX model
+    smplx_model = smplx.create(
+        'models_smplx_v1_1/models',
+        model_type='smplx',
+        gender='neutral',
+        use_face_contour=False,
+        use_pca=False,
+        ext='npz'
+    )
+
+    # Create pyrender scene
+    scene = pyrender.Scene(ambient_light=[0.3, 0.3, 0.3])
+
+    # Camera
+    camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0)
+    camera_pose = np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 1.5],
+        [0.0, 0.0, 1.0, 3.0],
+        [0.0, 0.0, 0.0, 1.0]
+    ])
+    scene.add(camera, pose=camera_pose)
+
+    # Lights
+    light = pyrender.DirectionalLight(color=[1.0, 1.0, 1.0], intensity=3.0)
+    scene.add(light, pose=camera_pose)
+
+    # Color for avatar
+    color = [0.3, 0.5, 0.8, 1.0]  # Blue
+
+    # Pre-compute all meshes for the sequence
+    print("  Pre-computing meshes for all frames...")
+    all_meshes = []
+    for frame_idx in tqdm(range(seq_len), desc="Computing SMPLX"):
+        pose_params = poses_full[sample_idx, frame_idx].detach().cpu().numpy()
+
+        # Parse pose parameters
+        global_orient = torch.FloatTensor(pose_params[:3]).unsqueeze(0)
+        body_pose = torch.FloatTensor(pose_params[3:66]).unsqueeze(0)
+        jaw_pose = torch.FloatTensor(pose_params[66:69]).unsqueeze(0)
+        leye_pose = torch.FloatTensor(pose_params[69:72]).unsqueeze(0)
+        reye_pose = torch.FloatTensor(pose_params[72:75]).unsqueeze(0)
+        left_hand_pose = torch.FloatTensor(pose_params[75:120]).unsqueeze(0)
+        right_hand_pose = torch.FloatTensor(pose_params[120:165]).unsqueeze(0)
+
+        # SMPLX forward pass
+        with torch.no_grad():
+            output = smplx_model(
+                global_orient=global_orient,
+                body_pose=body_pose,
+                jaw_pose=jaw_pose,
+                leye_pose=leye_pose,
+                reye_pose=reye_pose,
+                left_hand_pose=left_hand_pose,
+                right_hand_pose=right_hand_pose,
+                return_verts=True
+            )
+
+        vertices = output.vertices[0].cpu().numpy()
+        faces = smplx_model.faces
+
+        # Create mesh
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+        mesh.visual.vertex_colors = color
+        all_meshes.append(mesh)
+
+    print(f"  ✓ Computed {len(all_meshes)} meshes")
+
+    # Interactive animation viewer
+    print("\n  Starting interactive viewer...")
+    print("  Controls:")
+    print("    - SPACE: Play/Pause")
+    print("    - N: Next frame")
+    print("    - P: Previous frame")
+    print("    - R: Reset to first frame")
+    print("    - Q or ESC: Quit")
+
+    # Create viewer with custom update callback
+    class AnimationViewer:
+        def __init__(self, scene, meshes, fps):
+            self.scene = scene
+            self.meshes = meshes
+            self.fps = fps
+            self.current_frame = 0
+            self.playing = True
+            self.mesh_node = None
+            self.last_update = 0
+            import time
+            self.time = time
+
+            # Add initial mesh
+            self.update_mesh()
+
+        def update_mesh(self):
+            # Remove old mesh
+            if self.mesh_node is not None:
+                self.scene.remove_node(self.mesh_node)
+
+            # Add new mesh
+            mesh_pyrender = pyrender.Mesh.from_trimesh(self.meshes[self.current_frame], smooth=False)
+            self.mesh_node = self.scene.add(mesh_pyrender)
+
+        def advance_frame(self):
+            if self.playing:
+                current_time = self.time.time()
+                if current_time - self.last_update > (1.0 / self.fps):
+                    self.current_frame = (self.current_frame + 1) % len(self.meshes)
+                    self.update_mesh()
+                    self.last_update = current_time
+
+        def next_frame(self):
+            self.current_frame = (self.current_frame + 1) % len(self.meshes)
+            self.update_mesh()
+
+        def prev_frame(self):
+            self.current_frame = (self.current_frame - 1) % len(self.meshes)
+            self.update_mesh()
+
+        def reset(self):
+            self.current_frame = 0
+            self.update_mesh()
+
+        def toggle_play(self):
+            self.playing = not self.playing
+
+    anim = AnimationViewer(scene, all_meshes, fps)
+
+    # Create viewer with animation callback
+    viewer = pyrender.Viewer(
+        scene,
+        use_raymond_lighting=True,
+        run_in_thread=False,
+        refresh_rate=fps,
+        registered_keys={
+            ' ': lambda *args, **kwargs: anim.toggle_play(),
+            'r': lambda *args, **kwargs: anim.reset(),
+            'n': lambda *args, **kwargs: anim.next_frame(),
+            'p': lambda *args, **kwargs: anim.prev_frame(),
+        },
+        run_loop_callback=lambda *args, **kwargs: anim.advance_frame()
+    )
+
+    print("✓ Animation viewer closed!")
+
+
 def visualize_hierarchical_levels(vqvae_model, codes_all, sample_idx=0, frame_idx=0):
     """
-    Visualize poses from each hierarchical level side-by-side.
+    Visualize poses from each hierarchical level side-by-side (STATIC).
 
     Args:
         vqvae_model: Trained VQ-VAE model
@@ -344,10 +516,14 @@ def main():
                        help='Output file for generated poses')
     parser.add_argument('--no-visualize', action='store_false', dest='visualize', default=True,
                        help='Disable visualization (visualization enabled by default)')
+    parser.add_argument('--animate', action='store_true',
+                       help='Show animated sequence instead of static hierarchical levels')
+    parser.add_argument('--fps', type=int, default=30,
+                       help='Frames per second for animation (default: 30)')
     parser.add_argument('--sample-idx', type=int, default=0,
                        help='Which sample to visualize (0 to num_samples-1)')
     parser.add_argument('--frame-idx', type=int, default=0,
-                       help='Which frame to visualize (0 to 24)')
+                       help='Which frame to visualize for static view (0 to 24, ignored if --animate)')
 
     args = parser.parse_args()
 
@@ -442,15 +618,28 @@ def main():
 
     # Visualize if requested
     if args.visualize:
-        print("\n5. Visualizing hierarchical levels...")
-        print(f"   Sample: {args.sample_idx}/{args.num_samples-1}")
-        print(f"   Frame: {args.frame_idx}/24")
-        visualize_hierarchical_levels(
-            vqvae_model,
-            codes_all,
-            sample_idx=args.sample_idx,
-            frame_idx=args.frame_idx
-        )
+        if args.animate:
+            # Show animated sequence
+            print("\n5. Visualizing animated sequence...")
+            print(f"   Sample: {args.sample_idx}/{args.num_samples-1}")
+            print(f"   FPS: {args.fps}")
+            visualize_animated_sequence(
+                vqvae_model,
+                codes_all,
+                sample_idx=args.sample_idx,
+                fps=args.fps
+            )
+        else:
+            # Show static hierarchical levels
+            print("\n5. Visualizing hierarchical levels (static)...")
+            print(f"   Sample: {args.sample_idx}/{args.num_samples-1}")
+            print(f"   Frame: {args.frame_idx}/24")
+            visualize_hierarchical_levels(
+                vqvae_model,
+                codes_all,
+                sample_idx=args.sample_idx,
+                frame_idx=args.frame_idx
+            )
 
     print("\n" + "="*60)
     print("SAMPLING COMPLETE!")
@@ -458,11 +647,14 @@ def main():
     print(f"Generated {args.num_samples} poses")
     print(f"Temperature: {args.temperature}")
     if args.visualize:
-        print(f"Visualization shown for sample {args.sample_idx}, frame {args.frame_idx}")
+        if args.animate:
+            print(f"Animation shown for sample {args.sample_idx} ({args.fps} FPS)")
+        else:
+            print(f"Visualization shown for sample {args.sample_idx}, frame {args.frame_idx}")
     else:
         print(f"\nVisualize with:")
-        print(f"  python visualize_pose_comparison.py --sample-file {args.output}")
-        print(f"Or run with --visualize flag to see hierarchical levels")
+        print(f"  Static: python sample_with_prior.py --visualize --sample-idx {args.sample_idx}")
+        print(f"  Animated: python sample_with_prior.py --visualize --animate --sample-idx {args.sample_idx}")
 
 
 if __name__ == '__main__':
