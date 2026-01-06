@@ -28,7 +28,7 @@ def get_scheduler(lr, epoch, sched, optimizer, loader):
 def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, start_epoch=-1,
           end_epoch=-1, batch_size=-1, sched=None, device='cuda', size=256, lr=-1, amp=None,
           use_progressive=False, level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
-          patience=-1):
+          patience=-1, kl_anneal_epochs=100, max_kl_weight=0.05):
 
     model_type = get_model_type(folder_name)
     _, train_params = conf_parser(dataset_name, n_run, folder_name)
@@ -126,14 +126,18 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                                 joint_loss_weight=3.0,
                                 level_1_weight=level_1_weight,
                                 level_2_weight=level_2_weight,
-                                level_3_weight=level_3_weight)
+                                level_3_weight=level_3_weight,
+                                kl_anneal_epochs=kl_anneal_epochs,
+                                max_kl_weight=max_kl_weight)
             else:
                 # Standard training with final output only
                 epoch_loss = train_vqvae(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
                            use_smplx_loss=use_smplx_loss,
                            pose_loss_weight=1.0,
                            vertex_loss_weight=5.0,
-                           joint_loss_weight=3.0)
+                           joint_loss_weight=3.0,
+                           kl_anneal_epochs=kl_anneal_epochs,
+                           max_kl_weight=max_kl_weight)
 
             # Early stopping check
             is_best = epoch_loss < best_loss

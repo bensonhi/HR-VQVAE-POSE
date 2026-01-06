@@ -23,6 +23,13 @@ sampler = vqvae_sampler
 # Early stopping: -1 to disable, positive number for patience (epochs without improvement)
 patience = 30  # Default: stop if no improvement for 30 epochs
 
+# ===== VAE KL Annealing Configuration =====
+# For continuous VAE training: gradually increase KL loss weight from 0 to max_kl_weight
+# This helps prevent KL collapse and improves reconstruction quality
+kl_anneal_epochs = 100  # Number of epochs to anneal from 0 to max (100 epochs = gradual increase)
+max_kl_weight = 0.05    # Maximum KL weight (β in β-VAE). Lower = better reconstruction, higher = better regularization
+                        # Default 0.05 is much lower than previous 0.25 to prioritize reconstruction quality
+
 # ===== Progressive Training Configuration =====
 # Set to True to enable progressive training with level-specific losses:
 #   - Level 1: Focus on body pose (global_orient + body)
@@ -87,5 +94,7 @@ train(
        level_1_weight=level_1_weight,
        level_2_weight=level_2_weight,
        level_3_weight=level_3_weight,
-       patience=patience)
+       patience=patience,
+       kl_anneal_epochs=kl_anneal_epochs,
+       max_kl_weight=max_kl_weight)
 

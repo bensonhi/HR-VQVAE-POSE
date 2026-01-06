@@ -4,7 +4,8 @@ from tqdm import tqdm
 
 
 def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, run_num,
-          use_smplx_loss=False, pose_loss_weight=1.0, vertex_loss_weight=1.0, joint_loss_weight=1.0):
+          use_smplx_loss=False, pose_loss_weight=1.0, vertex_loss_weight=1.0, joint_loss_weight=1.0,
+          kl_anneal_epochs=100, max_kl_weight=0.05):
     """
     Training loop with optional SMPLX-based multi-loss supervision.
 
@@ -25,13 +26,21 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
         pose_loss_weight: Weight for pose reconstruction loss
         vertex_loss_weight: Weight for vertex reconstruction loss
         joint_loss_weight: Weight for joint reconstruction loss
+        kl_anneal_epochs: Number of epochs to anneal KL weight from 0 to max (for VAE)
+        max_kl_weight: Maximum KL weight after annealing (beta in beta-VAE)
     """
     loader = tqdm(loader)
 
     criterion = nn.MSELoss()
     # latent_loss_weight: For VAE, this weights the KL divergence loss (beta in beta-VAE)
     # For VQ-VAE, this was the quantization (codebook) loss weight
-    latent_loss_weight = 0.25
+    # Use KL annealing for VAE: gradually increase from 0 to max_kl_weight
+    if kl_anneal_epochs > 0:
+        # Linear annealing schedule
+        latent_loss_weight = min(max_kl_weight, (epoch_num / kl_anneal_epochs) * max_kl_weight)
+    else:
+        # No annealing, use max weight directly
+        latent_loss_weight = max_kl_weight
 
     # Track losses
     pose_mse_sum = 0
@@ -139,6 +148,7 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
             )
         desc += (
             f'total: {avg_total:.5f}; '
+            f'β: {latent_loss_weight:.4f}; '
             f'lr: {lr:.5f}'
         )
         loader.set_description(desc)
@@ -147,6 +157,7 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
     writer.add_scalar('Loss/train', pose_mse_sum / mse_n, epoch_num)
     writer.add_scalar('Loss/pose_mse', pose_mse_sum / mse_n, epoch_num)
     writer.add_scalar('Loss/total', total_loss_sum / mse_n, epoch_num)
+    writer.add_scalar('Loss/kl_weight', latent_loss_weight, epoch_num)
 
     if use_smplx_loss:
         writer.add_scalar('Loss/vertex_mse', vertex_mse_sum / mse_n, epoch_num)

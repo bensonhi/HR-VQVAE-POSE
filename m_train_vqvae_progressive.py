@@ -167,7 +167,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
                      optimizer, scheduler, device, dataset_name, run_num,
                      use_smplx_loss=False, pose_loss_weight=1.0, vertex_loss_weight=1.0, joint_loss_weight=1.0,
                      level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
-                     level_loss_configs=None):
+                     level_loss_configs=None, kl_anneal_epochs=100, max_kl_weight=0.05):
     """
     Progressive training with stop gradients between levels and global losses.
 
@@ -218,7 +218,13 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
     loader = tqdm(loader)
 
     criterion = nn.MSELoss()
-    latent_loss_weight = 0.25
+    # Use KL annealing for VAE: gradually increase from 0 to max_kl_weight
+    if kl_anneal_epochs > 0:
+        # Linear annealing schedule
+        latent_loss_weight = min(max_kl_weight, (epoch_num / kl_anneal_epochs) * max_kl_weight)
+    else:
+        # No annealing, use max weight directly
+        latent_loss_weight = max_kl_weight
 
     # Track losses
     level_1_loss_sum = 0.0
