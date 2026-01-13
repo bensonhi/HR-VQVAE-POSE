@@ -95,6 +95,10 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
     elif model_type in [VQVAE, VQVAE_1]:
         scheduler = get_scheduler(lr, end_epoch - start_epoch, sched, optimizer, loader)
 
+        # Add cosine annealing learning rate scheduler for better convergence
+        from torch.optim.lr_scheduler import CosineAnnealingLR
+        cosine_scheduler = CosineAnnealingLR(optimizer, T_max=end_epoch-start_epoch, eta_min=1e-5)
+
         # Check if model has SMPLX capability
         use_smplx_loss = False
         if hasattr(model, 'module'):  # DataParallel wrapper
@@ -158,6 +162,10 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
             if is_best:
                 best_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint='best')
                 torch.save(model.state_dict(), best_path)
+
+            # Step the cosine annealing scheduler
+            if cosine_scheduler is not None:
+                cosine_scheduler.step()
 
             # Check if should stop early
             if early_stop_enabled and epochs_without_improvement >= patience:

@@ -345,6 +345,9 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
         # ==================== Backward Pass ====================
         total_loss.backward()
 
+        # Gradient clipping for training stability
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
         if scheduler is not None:
             scheduler.step()
         optimizer.step()
