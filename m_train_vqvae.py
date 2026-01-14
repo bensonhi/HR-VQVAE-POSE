@@ -116,8 +116,8 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
         # Backward pass
         total_loss.backward()
 
-        # Gradient clipping for training stability
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        # Gradient clipping for training stability (higher threshold for larger model)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
 
         if scheduler is not None:
             scheduler.step()
