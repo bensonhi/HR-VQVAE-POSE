@@ -8,23 +8,7 @@ def model_option_parser(model_type, conf_path):
     config = configparser.ConfigParser()
     config.read(conf_path)
     model = config['Model']
-    if model_type == 'pixelsnail':
-        return {
-            'shape': [model.getint('shape_height'), model.getint('shape_width')],
-            'n_class': model.getint('n_class'),
-            'channel': model.getint('channel'),
-            'kernel_size': model.getint('kernel_size'),
-            'n_block': model.getint('n_block'),
-            'n_res_block': model.getint('n_res_block'),
-            'res_channel': model.getint('res_channel'),
-            'dropout': model.getfloat('dropout'),
-            'n_cond_res_block': model.getint('n_cond_res_block'),
-            'cond_res_channel': model.getint('cond_res_channel'),
-            'cond_res_kernel': model.getint('cond_res_kernel'),
-            'n_out_res_block': model.getint('n_out_res_block'),
-            'attention': model.getboolean('attention')
-        }
-    elif model_type == 'vqvae':
+    if model_type == 'vae':
         options = {
             'in_channel': model.getint('in_channel'),
             'channel': model.getint('channel'),
@@ -36,16 +20,6 @@ def model_option_parser(model_type, conf_path):
             'stride': model.getint('stride'),
         }
 
-        # Check if we have per-layer codebook sizes (for paper's {8, 64, 512} specification)
-        if 'n_embed_layer1' in model:
-            n_embeds = []
-            for i in range(options['n_level']):
-                n_embeds.append(model.getint(f'n_embed_layer{i+1}'))
-            options['n_embeds'] = n_embeds
-        else:
-            # Fallback to single n_embed for all layers (backward compatibility)
-            options['n_embed'] = model.getint('n_embed')
-
         # Check for SMPLX parameters
         if 'use_smplx' in model:
             options['use_smplx'] = model.getboolean('use_smplx')
@@ -53,16 +27,8 @@ def model_option_parser(model_type, conf_path):
                 options['smplx_model_path'] = model.get('smplx_model_path')
 
         return options
-    elif model_type == 'vqvae_1':
-        return {
-            'in_channel': model.getint('in_channel'),
-            'channel': model.getint('channel'),
-            'n_res_block': model.getint('n_res_block'),
-            'n_res_channel': model.getint('n_res_channel'),
-            'embed_dim': model.getint('embed_dim'),
-            'n_embed': model.getint('n_embed'),
-            'decay': model.getfloat('decay'),
-        }
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
 
 
 def training_params_parser(conf_path):

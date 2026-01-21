@@ -13,7 +13,7 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
         folder_name: Model folder name
         epoch_num: Current epoch number
         loader: DataLoader
-        model: VQ-VAE model (optionally with SMPLX layer)
+        model: VAE model (optionally with SMPLX layer)
         writer: TensorBoard writer
         do_sample: Whether to sample this epoch
         sampler: Sampling function
@@ -32,9 +32,8 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
     loader = tqdm(loader)
 
     criterion = nn.MSELoss()
-    # latent_loss_weight: For VAE, this weights the KL divergence loss (beta in beta-VAE)
-    # For VQ-VAE, this was the quantization (codebook) loss weight
-    # Use KL annealing for VAE: gradually increase from 0 to max_kl_weight
+    # latent_loss_weight: This weights the KL divergence loss (beta in beta-VAE)
+    # Use KL annealing: gradually increase from 0 to max_kl_weight
     if kl_anneal_epochs > 0:
         # Linear annealing schedule
         latent_loss_weight = min(max_kl_weight, (epoch_num / kl_anneal_epochs) * max_kl_weight)
@@ -106,7 +105,7 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
             joint_recon_loss = criterion(pred_joints, gt_joints)
 
         # Combine losses
-        # latent_loss is KL divergence for VAE (or quantization loss for VQ-VAE)
+        # latent_loss is KL divergence for VAE
         latent_loss = latent_loss.mean()
         total_loss = (pose_loss_weight * pose_recon_loss +
                      vertex_loss_weight * vertex_recon_loss +

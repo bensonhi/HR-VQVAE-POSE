@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 
 from m_util import conf_parser, model_object_parser, get_model_type, get_path, load_part
-from consts import PIXELSNAIL, VQVAE, TOP, BOTTOM, MIDDLE, VQVAE_1
-from m_train_pixelsnail import train as train_pixelsnail
-from m_train_vqvae import train as train_vqvae
-from m_train_vqvae_progressive import train_progressive
+from consts import VAE
+from m_train_vae import train as train_vae
+from m_train_vae_progressive import train_progressive
 from torch.utils.tensorboard import SummaryWriter
 
 from torch import optim, nn
@@ -68,31 +67,13 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
 
     optimizer = get_optimizer(model, lr)
 
-    # Disable AMP for now
-    # if amp is not None:
-    #     model, optimizer = amp.initialize(model, optimizer, opt_level=amp)
-
     model = nn.DataParallel(model)
     model = model.to(device)
     sample_iter = 0
-    folder_path = get_path(dataset_name, n_run, model, folder_name, checkpoint=0)[:-1]
+    folder_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=0)[:-6]
     writer = SummaryWriter(log_dir=folder_path+'{}_{}'.format(*[start_epoch, end_epoch]))
-    if model_type == PIXELSNAIL:
 
-        for i in range(start_epoch, end_epoch):
-            sample_iter += 1
-            do_sample = sample_period > 0 and sample_iter % sample_period == 0
-            scheduler = get_scheduler(lr, end_epoch - start_epoch, sched, optimizer, loader)
-
-            train_pixelsnail(i, loader, model,writer , do_sample, sampler, optimizer, scheduler, device)
-            save_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
-
-            torch.save(
-                {'model': model.module.state_dict(), 'args': args},
-                save_path,
-            )
-
-    elif model_type in [VQVAE, VQVAE_1]:
+    if model_type == VAE:
         scheduler = get_scheduler(lr, end_epoch - start_epoch, sched, optimizer, loader)
 
         # Add cosine annealing learning rate scheduler for better convergence
@@ -135,7 +116,7 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                                 max_kl_weight=max_kl_weight)
             else:
                 # Standard training with final output only
-                epoch_loss = train_vqvae(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
+                epoch_loss = train_vae(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
                            use_smplx_loss=use_smplx_loss,
                            pose_loss_weight=1.0,
                            vertex_loss_weight=5.0,
@@ -169,7 +150,7 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
 
             # Check if should stop early
             if early_stop_enabled and epochs_without_improvement >= patience:
-                print(f"\n⚠️  Early stopping triggered after epoch {i+1}")
+                print(f"\nEarly stopping triggered after epoch {i+1}")
                 print(f"   No improvement for {patience} epochs")
                 print(f"   Best loss: {best_loss:.6f} at epoch {i+1-epochs_without_improvement}")
                 if best_model_state is not None:

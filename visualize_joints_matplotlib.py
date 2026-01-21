@@ -79,8 +79,8 @@ def plot_skeleton_3d(ax, joints, color='blue', alpha=0.8, label=''):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Visualize VQ-VAE joint reconstruction')
-    parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vqvae/runtime_samples', type=str,
+    parser = argparse.ArgumentParser(description='Visualize VAE joint reconstruction')
+    parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vae/runtime_samples', type=str,
                         help='Directory with runtime sample .npz files')
     parser.add_argument('--sample-idx', default=-1, type=int,
                         help='Which sample file to use (-1 = latest)')

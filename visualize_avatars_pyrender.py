@@ -156,7 +156,7 @@ def joints_to_smplx_mesh(joints, smplx_model, device='cuda'):
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize SMPL-X avatars (original vs reconstructed)')
-    parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vqvae/runtime_samples', type=str,
+    parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vae/runtime_samples', type=str,
                         help='Directory with runtime sample .npz files')
     parser.add_argument('--sample-idx', default=-1, type=int,
                         help='Which sample file to use (-1 = latest)')

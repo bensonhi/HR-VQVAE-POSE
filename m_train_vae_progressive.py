@@ -197,7 +197,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
         folder_name: Model folder name
         epoch_num: Current epoch number
         loader: DataLoader
-        model: VQ-VAE model with multi-level architecture
+        model: VAE model with multi-level architecture
         writer: TensorBoard writer
         do_sample: Whether to sample this epoch
         sampler: Sampling function

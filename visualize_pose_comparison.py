@@ -252,10 +252,10 @@ def visualize_multiple_poses(model, pose_params_list, titles, plot_joints=True, 
     pyrender.Viewer(scene, use_raymond_lighting=True, window_title="Multi-Level Comparison")
 
 def main():
-    parser = argparse.ArgumentParser(description='Visualize HR-VQVAE pose reconstruction comparison')
+    parser = argparse.ArgumentParser(description='Visualize HR-VAE pose reconstruction comparison')
     parser.add_argument('--model-folder', default='models_smplx_v1_1/models', type=str,
                         help='Path to SMPL-X model folder')
-    parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vqvae/runtime_samples', 
+    parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vae/runtime_samples',
                         type=str, help='Path to runtime samples directory')
     parser.add_argument('--sample-idx', default=-1, type=int,
                         help='Which sample to visualize (-1 for latest, 0-based index)')

@@ -287,10 +287,10 @@ def visualize_side_by_side_comparison(model, original_params, reconstructed_para
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Visualize HR-VQVAE joint reconstruction with SMPL-X avatar comparison')
+    parser = argparse.ArgumentParser(description='Visualize HR-VAE joint reconstruction with SMPL-X avatar comparison')
     parser.add_argument('--model-folder', default='models_smplx_v1_1/models', type=str,
                         help='Path to SMPL-X model folder')
-    parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vqvae/runtime_samples',
+    parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vae/runtime_samples',
                         type=str, help='Path to runtime samples directory')
     parser.add_argument('--beat2-dir', default='BEAT2_joints_vertices/beat_chinese_v2.0.0/smplxflame_30',
                         type=str, help='Path to processed BEAT2 data directory')

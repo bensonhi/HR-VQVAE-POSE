@@ -162,8 +162,8 @@ def compare_and_plot(orig_vec, recon_vec, center_mode='pelvis', overlay=False, s
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Visualize joint-position VQ-VAE reconstruction (original vs reconstructed)')
-    parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vqvae/runtime_samples', type=str,
+    parser = argparse.ArgumentParser(description='Visualize joint-position VAE reconstruction (original vs reconstructed)')
+    parser.add_argument('--samples-dir', default='checkpoint/beat2_poses/0/vae/runtime_samples', type=str,
                         help='Directory with runtime sample .npz files')
     parser.add_argument('--sample-idx', default=-1, type=int,
                         help='Which sample file to use (-1 = latest)')

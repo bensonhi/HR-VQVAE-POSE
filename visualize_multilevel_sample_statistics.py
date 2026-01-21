@@ -1,14 +1,14 @@
 """
-Visualize multi-level VQ-VAE samples to compare reconstruction quality across levels.
+Visualize multi-level VAE samples to compare reconstruction quality across levels.
 
 This script loads the runtime samples generated during training and visualizes
-the reconstruction from each quantization level, allowing you to see:
+the reconstruction from each VAE level, allowing you to see:
 - What each level learns
 - How much improvement each level adds
-- The progressive refinement from Level 1 → Level 2 → Level 3
+- The progressive refinement from Level 1 -> Level 2 -> Level 3
 
 Usage:
-    python visualize_multilevel_samples.py --sample-file checkpoint/beat2_poses/0/vqvae/runtime_samples/000.npz
+    python visualize_multilevel_samples.py --sample-file checkpoint/beat2_poses/0/vae/runtime_samples/000.npz
 """
 
 import argparse
@@ -270,9 +270,9 @@ def visualize_multilevel_comparison(sample_file):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Visualize multi-level VQ-VAE samples')
+    parser = argparse.ArgumentParser(description='Visualize multi-level VAE samples')
     parser.add_argument('--sample-file', type=str,
-                       default='checkpoint/beat2_poses/0/vqvae/runtime_samples/00002_new_structure_loss.npz',
+                       default='checkpoint/beat2_poses/0/vae/runtime_samples/00002_new_structure_loss.npz',
                        help='Path to sample .npz file')
 
     args = parser.parse_args()
@@ -282,7 +282,7 @@ def main():
     if not sample_file.exists():
         print(f"Error: Sample file not found: {sample_file}")
         print("\nMake sure to train the model first to generate runtime samples.")
-        print("Runtime samples are saved in: checkpoint/<dataset>/<run>/vqvae/runtime_samples/")
+        print("Runtime samples are saved in: checkpoint/<dataset>/<run>/vae/runtime_samples/")
         return
 
     visualize_multilevel_comparison(sample_file)
