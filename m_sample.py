@@ -37,9 +37,8 @@ def vae_sampler(folder_name, model, data, dataset_name, run_num, epoch, batch_si
 
                 # Generate reconstruction for each level (1, 2, 3, ...)
                 for level in range(1, n_levels + 1):
-                    # Transpose data to conv1d format
-                    data_conv = data.transpose(1, 2)
-                    level_out, _ = actual_model.decode_partial_levels(data_conv, num_levels=level)
+                    # Transformer model works directly with (B, T, D) format
+                    level_out, _ = actual_model.decode_partial_levels(data, num_levels=level)
                     save_dict[f'reconstructed_level_{level}'] = level_out.cpu().numpy()
                     print(f"    - Level {level} (using {level} VAE level(s))")
 
