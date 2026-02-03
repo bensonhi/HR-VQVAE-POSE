@@ -26,6 +26,7 @@ def create_model_object(model_type, options):
         return VAE_Pose_ML(
             in_channel=options['in_channel'],
             d_model=options.get('d_model', options.get('channel', 256)),
+            latent_dim=options.get('latent_dim', 256),
             embed_dim=options['embed_dim'],
             nhead=options.get('nhead', 8),
             num_encoder_layers=options.get('num_encoder_layers', 4),
@@ -33,6 +34,7 @@ def create_model_object(model_type, options):
             dim_feedforward=options.get('dim_feedforward', 1024),
             n_level=options['n_level'],
             dropout=options.get('dropout', 0.1),
+            max_len=options.get('max_len', 1024),
             use_smplx=options.get('use_smplx', False),
             smplx_model_path=options.get('smplx_model_path', 'models_smplx_v1_1/models')
         )

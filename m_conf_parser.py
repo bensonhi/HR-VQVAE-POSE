@@ -24,6 +24,14 @@ def model_option_parser(model_type, conf_path):
         else:
             options['d_model'] = 256  # default
 
+        if 'latent_dim' in model:
+            options['latent_dim'] = model.getint('latent_dim')
+        else:
+            options['latent_dim'] = 256  # default
+
+        if 'max_len' in model:
+            options['max_len'] = model.getint('max_len')
+
         if 'nhead' in model:
             options['nhead'] = model.getint('nhead')
         if 'num_encoder_layers' in model:
