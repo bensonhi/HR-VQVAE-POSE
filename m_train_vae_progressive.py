@@ -209,6 +209,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
     level_2_loss_sum = 0.0
     level_3_loss_sum = 0.0
     global_loss_sum = 0.0
+    kl_raw_sum = 0.0
     total_loss_sum = 0.0
     level_1_components = {}
     level_2_components = {}
@@ -347,6 +348,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
         level_2_loss_sum += level_2_local_loss.item() * batch_size
         level_3_loss_sum += level_3_local_loss.item() * batch_size
         global_loss_sum += global_loss.item() * batch_size
+        kl_raw_sum += latent_loss.item() * batch_size
         total_loss_sum += total_loss.item() * batch_size
         mse_n += batch_size
 
@@ -365,6 +367,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
         avg_l2 = level_2_loss_sum / mse_n
         avg_l3 = level_3_loss_sum / mse_n
         avg_global = global_loss_sum / mse_n
+        avg_kl_raw = kl_raw_sum / mse_n
         avg_total = total_loss_sum / mse_n
 
         desc = (
@@ -373,6 +376,8 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             f'L2(body): {avg_l2:.5f}; '
             f'L3(hands): {avg_l3:.5f}; '
             f'Global: {avg_global:.5f}; '
+            f'KL: {avg_kl_raw:.2f}; '
+            f'\u03b2: {latent_loss_weight:.4f}; '
             f'Total: {avg_total:.5f}; '
             f'lr: {lr:.5f}'
         )
@@ -384,6 +389,9 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
     writer.add_scalar('Loss/level_2_total', level_2_loss_sum / mse_n, epoch_num)
     writer.add_scalar('Loss/level_3_total', level_3_loss_sum / mse_n, epoch_num)
     writer.add_scalar('Loss/global_total', global_loss_sum / mse_n, epoch_num)
+    writer.add_scalar('Loss/kl_raw', kl_raw_sum / mse_n, epoch_num)
+    writer.add_scalar('Loss/kl_weighted', latent_loss_weight * kl_raw_sum / mse_n, epoch_num)
+    writer.add_scalar('Loss/kl_weight', latent_loss_weight, epoch_num)
 
     for k, v in level_1_components.items():
         writer.add_scalar(f'Loss/level_1_{k}', v / mse_n, epoch_num)

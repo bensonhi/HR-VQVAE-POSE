@@ -11,6 +11,63 @@ import torch
 from scheduler import CycleScheduler
 
 
+def validate_epoch(model, val_loader, device):
+    """
+    Compute masked pose MSE on validation set (no KL, no geometry losses).
+    Returns average validation reconstruction loss.
+    """
+    model.eval()
+    val_loss_sum = 0.0
+    val_n = 0
+
+    with torch.no_grad():
+        for data, label in val_loader:
+            if isinstance(data, dict):
+                poses = data['poses'].to(device)
+                gesture_type = data.get('gesture_type', None)
+                if gesture_type is not None:
+                    gesture_type = gesture_type.to(device)
+                lengths = data.get('lengths', None)
+                if lengths is not None:
+                    lengths = lengths.to(device)
+                padding_mask = data.get('padding_mask', None)
+                if padding_mask is not None:
+                    padding_mask = padding_mask.to(device)
+                audio = data.get('audio', None)
+                if audio is not None:
+                    audio = audio.to(device)
+            else:
+                poses = data.to(device)
+                padding_mask = None
+                gesture_type = None
+                lengths = None
+                audio = None
+
+            result = model(poses, padding_mask=padding_mask, gesture_type=gesture_type,
+                          lengths=lengths, audio_features=audio)
+            # Handle both (recon, kl) and (intermediates, kl) return formats
+            if isinstance(result[0], list):
+                reconstructed_poses = result[0][-1]  # final level output
+            else:
+                reconstructed_poses = result[0]
+
+            # Masked pose MSE only
+            if padding_mask is not None:
+                valid_mask = ~padding_mask
+                valid_mask_expanded = valid_mask.unsqueeze(-1)
+                num_valid = valid_mask.sum().clamp(min=1)
+                batch_loss = (((reconstructed_poses - poses) ** 2) * valid_mask_expanded).sum() / (num_valid * poses.shape[-1])
+            else:
+                batch_loss = torch.nn.functional.mse_loss(reconstructed_poses, poses)
+
+            batch_size = poses.shape[0]
+            val_loss_sum += batch_loss.item() * batch_size
+            val_n += batch_size
+
+    model.train()
+    return val_loss_sum / val_n if val_n > 0 else float('inf')
+
+
 def get_optimizer(model, lr):
     return optim.Adam(model.parameters(), lr=lr)
 
@@ -27,7 +84,7 @@ def get_scheduler(lr, epoch, sched, optimizer, loader):
 def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, start_epoch=-1,
           end_epoch=-1, batch_size=-1, sched=None, device='cuda', size=256, lr=-1, amp=None,
           use_progressive=False, level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
-          patience=-1, kl_anneal_epochs=100, max_kl_weight=0.05):
+          patience=-1, kl_anneal_epochs=100, max_kl_weight=0.05, val_loader=None):
 
     model_type = get_model_type(folder_name)
     _, train_params = conf_parser(dataset_name, n_run, folder_name)
@@ -94,9 +151,13 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
         early_stop_enabled = patience > 0
 
         if early_stop_enabled:
-            print(f"Early stopping enabled with patience={patience} (starts after KL annealing epoch {kl_anneal_epochs})")
+            stop_metric = "val_recon" if val_loader is not None else "train_total"
+            print(f"Early stopping enabled with patience={patience} on {stop_metric} (starts after KL annealing epoch {kl_anneal_epochs})")
         else:
             print("Early stopping disabled")
+
+        if val_loader is not None:
+            print(f"Validation loader provided ({len(val_loader)} batches)")
 
         for i in range(start_epoch, end_epoch):
             sample_iter += 1
@@ -126,10 +187,20 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
 
             # Early stopping check (only after KL annealing is complete)
             kl_annealing_done = (i + 1) >= kl_anneal_epochs
+
+            # Compute val loss if val_loader is provided and KL annealing is done
+            val_loss = None
+            if val_loader is not None and kl_annealing_done:
+                val_loss = validate_epoch(model, val_loader, device)
+                writer.add_scalar('Loss/val_recon', val_loss, i)
+                print(f"  Epoch {i+1}: train_loss={epoch_loss:.6f}, val_loss={val_loss:.6f}")
+
             if kl_annealing_done:
-                is_best = epoch_loss < best_loss
+                # Use val loss for early stopping if available, otherwise train loss
+                stop_loss = val_loss if val_loss is not None else epoch_loss
+                is_best = stop_loss < best_loss
                 if is_best:
-                    best_loss = epoch_loss
+                    best_loss = stop_loss
                     epochs_without_improvement = 0
                     if early_stop_enabled:
                         best_model_state = model.state_dict()

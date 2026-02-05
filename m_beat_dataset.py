@@ -1,4 +1,5 @@
 import os
+import csv
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -102,6 +103,7 @@ class BEAT2PoseDataset(Dataset):
                  pose_dims: int = 165,
                  use_axis_angle: bool = True,
                  audio_dir: Optional[str] = None,
+                 split: Optional[str] = None,
                  # Legacy parameters (ignored, kept for backward compat)
                  sequence_length: int = 120,
                  stride: int = 30,
@@ -120,6 +122,7 @@ class BEAT2PoseDataset(Dataset):
             pose_dims: Dimension of pose data (165 for SMPLX axis-angle)
             use_axis_angle: If True, load axis-angle poses (165D)
             audio_dir: Path to wav2vec_30 features directory. If None, auto-constructed.
+            split: 'train', 'val', or 'test' to filter by BEAT2 split. None = all files.
         """
         self.data_path = data_path
         self.language = language
@@ -127,6 +130,7 @@ class BEAT2PoseDataset(Dataset):
         self.max_length = max_length
         self.pose_dims = pose_dims
         self.use_axis_angle = use_axis_angle
+        self.split = split
 
         # Determine the correct language folder
         lang_folders = {
@@ -136,11 +140,11 @@ class BEAT2PoseDataset(Dataset):
             'japanese': 'beat_japanese_v2.0.0'
         }
         lang_folder = lang_folders.get(language, f'beat_{language}_v2.0.0')
-        lang_path = os.path.join(data_path, lang_folder)
+        self.lang_path = os.path.join(data_path, lang_folder)
 
-        self.pose_dir = os.path.join(lang_path, 'smplxflame_30')
-        self.sem_dir = os.path.join(lang_path, 'sem')
-        self.audio_dir = audio_dir or os.path.join(lang_path, 'wav2vec_30')
+        self.pose_dir = os.path.join(self.lang_path, 'smplxflame_30')
+        self.sem_dir = os.path.join(self.lang_path, 'sem')
+        self.audio_dir = audio_dir or os.path.join(self.lang_path, 'wav2vec_30')
 
         self.pose_files = sorted(glob.glob(os.path.join(self.pose_dir, '*.npz')))
 
@@ -150,11 +154,26 @@ class BEAT2PoseDataset(Dataset):
 
         self._load_pose_sequences()
 
+        split_str = f", split={split}" if split else ""
         print(f"Loaded {len(self.file_data)} files, {len(self.sample_index)} sample entries "
-              f"from {language} BEAT2 data (variable-length [{min_length}, {max_length}])")
+              f"from {language} BEAT2 data (variable-length [{min_length}, {max_length}]{split_str})")
 
     def _load_pose_sequences(self):
         """Load all pose sequences, sem labels, and audio features."""
+        # Build allowed basenames from train_test_split.csv if split is specified
+        allowed_basenames = None
+        if self.split is not None:
+            csv_path = os.path.join(self.lang_path, 'train_test_split.csv')
+            if not os.path.exists(csv_path):
+                raise FileNotFoundError(f"Split CSV not found: {csv_path}")
+            allowed_basenames = set()
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row['type'] == self.split:
+                        allowed_basenames.add(row['id'])
+            print(f"Split '{self.split}': {len(allowed_basenames)} files allowed by CSV")
+
         print(f"Loading pose sequences from {len(self.pose_files)} files...")
 
         avg_clip_length = (self.min_length + self.max_length) / 2.0
@@ -162,6 +181,10 @@ class BEAT2PoseDataset(Dataset):
         for file_path in tqdm(self.pose_files, desc="Loading files"):
             try:
                 basename = os.path.splitext(os.path.basename(file_path))[0]
+
+                # Skip files not in the requested split
+                if allowed_basenames is not None and basename not in allowed_basenames:
+                    continue
 
                 # Load poses
                 data = np.load(file_path)
@@ -313,6 +336,7 @@ def get_beat_variable_length_loader(
     num_workers: int = 8,
     use_axis_angle: bool = True,
     audio_dir: Optional[str] = None,
+    split: Optional[str] = None,
 ):
     """
     Create a DataLoader for BEAT2 with variable-length clips, gesture type, and audio.
@@ -327,6 +351,7 @@ def get_beat_variable_length_loader(
         num_workers: Number of data loading workers
         use_axis_angle: Load axis-angle poses (165D)
         audio_dir: Path to wav2vec features. If None, auto-constructed.
+        split: 'train', 'val', or 'test' to filter by BEAT2 split. None = all files.
     """
     dataset = BEAT2PoseDataset(
         data_path=data_path,
@@ -335,6 +360,7 @@ def get_beat_variable_length_loader(
         max_length=max_length,
         use_axis_angle=use_axis_angle,
         audio_dir=audio_dir,
+        split=split,
     )
 
     return DataLoader(

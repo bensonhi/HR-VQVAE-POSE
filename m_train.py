@@ -33,7 +33,7 @@ level_2_weight = 1.0  # Body pose loss weight
 level_3_weight = 1.0  # Hands pose loss weight
 
 from m_beat_dataset import get_beat_variable_length_loader
-loader = get_beat_variable_length_loader(
+train_loader = get_beat_variable_length_loader(
     data_path='BEAT2',
     language='english',
     batch_size=32,
@@ -42,11 +42,23 @@ loader = get_beat_variable_length_loader(
     shuffle=True,
     num_workers=8,
     use_axis_angle=True,
+    split='train',
+)
+val_loader = get_beat_variable_length_loader(
+    data_path='BEAT2',
+    language='english',
+    batch_size=32,
+    min_length=5,
+    max_length=300,
+    shuffle=False,
+    num_workers=8,
+    use_axis_angle=True,
+    split='val',
 )
 
 train(
        folder_name,
-       loader,
+       train_loader,
        dataset_name,
        n_run,
        sample_period,
@@ -65,4 +77,5 @@ train(
        level_3_weight=level_3_weight,
        patience=patience,
        kl_anneal_epochs=kl_anneal_epochs,
-       max_kl_weight=max_kl_weight)
+       max_kl_weight=max_kl_weight,
+       val_loader=val_loader)
