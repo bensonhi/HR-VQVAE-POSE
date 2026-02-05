@@ -87,14 +87,14 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
         elif hasattr(model, 'use_smplx'):
             use_smplx_loss = model.use_smplx
 
-        # Early stopping setup
+        # Early stopping setup (only starts after KL annealing is done)
         best_loss = float('inf')
         epochs_without_improvement = 0
         best_model_state = None
         early_stop_enabled = patience > 0
 
         if early_stop_enabled:
-            print(f"Early stopping enabled with patience={patience}")
+            print(f"Early stopping enabled with patience={patience} (starts after KL annealing epoch {kl_anneal_epochs})")
         else:
             print("Early stopping disabled")
 
@@ -124,16 +124,20 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                            kl_anneal_epochs=kl_anneal_epochs,
                            max_kl_weight=max_kl_weight)
 
-            # Early stopping check
-            is_best = epoch_loss < best_loss
-            if is_best:
-                best_loss = epoch_loss
-                epochs_without_improvement = 0
-                if early_stop_enabled:
-                    best_model_state = model.state_dict()
-                    print(f"  New best loss: {best_loss:.6f}")
+            # Early stopping check (only after KL annealing is complete)
+            kl_annealing_done = (i + 1) >= kl_anneal_epochs
+            if kl_annealing_done:
+                is_best = epoch_loss < best_loss
+                if is_best:
+                    best_loss = epoch_loss
+                    epochs_without_improvement = 0
+                    if early_stop_enabled:
+                        best_model_state = model.state_dict()
+                        print(f"  New best loss: {best_loss:.6f}")
+                else:
+                    epochs_without_improvement += 1
             else:
-                epochs_without_improvement += 1
+                is_best = True  # always save as "best" during annealing
 
             # Save checkpoint
             save_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
@@ -148,10 +152,10 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
             if cosine_scheduler is not None:
                 cosine_scheduler.step()
 
-            # Check if should stop early
-            if early_stop_enabled and epochs_without_improvement >= patience:
+            # Check if should stop early (only possible after KL annealing)
+            if early_stop_enabled and kl_annealing_done and epochs_without_improvement >= patience:
                 print(f"\nEarly stopping triggered after epoch {i+1}")
-                print(f"   No improvement for {patience} epochs")
+                print(f"   No improvement for {patience} epochs (counting started at epoch {kl_anneal_epochs})")
                 print(f"   Best loss: {best_loss:.6f} at epoch {i+1-epochs_without_improvement}")
                 if best_model_state is not None:
                     model.load_state_dict(best_model_state)
