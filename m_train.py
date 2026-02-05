@@ -22,7 +22,7 @@ patience = 30  # Default: stop if no improvement for 30 epochs
 
 # ===== VAE KL Annealing Configuration =====
 kl_anneal_epochs = 100
-max_kl_weight = 0.05
+max_kl_weight = 0.0001
 
 # ===== Progressive Training Configuration =====
 use_progressive = True
