@@ -21,38 +21,27 @@ sampler = vae_sampler
 patience = 30  # Default: stop if no improvement for 30 epochs
 
 # ===== VAE KL Annealing Configuration =====
-# For continuous VAE training: gradually increase KL loss weight from 0 to max_kl_weight
-# This helps prevent KL collapse and improves reconstruction quality
-kl_anneal_epochs = 100  # Number of epochs to anneal from 0 to max (100 epochs = gradual increase)
-max_kl_weight = 0.05    # Maximum KL weight (beta in beta-VAE). Lower = better reconstruction, higher = better regularization
+kl_anneal_epochs = 100
+max_kl_weight = 0.05
 
 # ===== Progressive Training Configuration =====
-# Set to True to enable progressive training with level-specific losses:
-#   - Level 1: Focus on face pose
-#   - Level 2: Focus on body pose
-#   - Level 3: Focus on hands + overall reconstruction
-# Set to False for standard training (all levels contribute to final output)
 use_progressive = True
 
-# Weights for each level in progressive training (only used if use_progressive=True)
+# Weights for each level in progressive training
 level_1_weight = 1.0  # Face pose loss weight
 level_2_weight = 1.0  # Body pose loss weight
 level_3_weight = 1.0  # Hands pose loss weight
 
-from m_beat_dataset import get_combined_pose_loader
-loader = get_combined_pose_loader(
-    beat2_path='BEAT2_joints_vertices',  # Has both poses and pre-computed GT
-    amass_path='AMASS',  # AMASS directory
-    amass_subsets=['BMLrub'],  # Include BMLrub subset from AMASS
+from m_beat_dataset import get_beat_variable_length_loader
+loader = get_beat_variable_length_loader(
+    data_path='BEAT2',
     language='english',
     batch_size=32,
-    sequence_length=25,
+    min_length=5,
+    max_length=300,
     shuffle=True,
-    num_workers=8,  # Parallel data loading
-    use_axis_angle=True,  # Load axis-angle poses (165D)
-    load_gt_geometry=True,  # Load ground truth vertices and joints for supervision
-    compute_gt_on_fly=True,  # Compute GT on-the-fly from poses using SMPLX
-    smplx_model_path='models_smplx_v1_1/models'
+    num_workers=8,
+    use_axis_angle=True,
 )
 
 train(

@@ -175,13 +175,55 @@ class LengthEmbedding(nn.Module):
         return discrete_embed + continuous_embed
 
 
+class GestureTypeEmbedding(nn.Module):
+    """Embedding for gesture type conditioning (beat=0, semantic=1)"""
+    def __init__(self, d_model, num_types=2):
+        super().__init__()
+        self.embed = nn.Embedding(num_types, d_model)
+
+    def forward(self, gesture_type):
+        """
+        Args:
+            gesture_type: (B,) tensor of gesture type indices
+        Returns:
+            (B, d_model) gesture type embedding
+        """
+        return self.embed(gesture_type)
+
+
+class AudioProjection(nn.Module):
+    """Project audio features to model dimension with layer norm"""
+    def __init__(self, audio_dim, d_model):
+        super().__init__()
+        self.proj = nn.Linear(audio_dim, d_model)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        """
+        Args:
+            x: (B, T, audio_dim)
+        Returns:
+            (B, T, d_model)
+        """
+        return self.norm(self.proj(x))
+
+
 class GlobalEncoder(nn.Module):
     """Transformer encoder that pools sequence into a global latent"""
-    def __init__(self, in_channel, d_model, latent_dim, nhead=8, num_layers=4, dim_feedforward=1024, dropout=0.1):
+    def __init__(self, in_channel, d_model, latent_dim, nhead=8, num_layers=4,
+                 dim_feedforward=1024, dropout=0.1, audio_dim=None):
         super().__init__()
 
         # Input projection
         self.input_proj = nn.Linear(in_channel, d_model)
+
+        # Audio projection for additive fusion at input (NEW)
+        self.audio_input_proj = None
+        if audio_dim is not None:
+            self.audio_input_proj = AudioProjection(audio_dim, d_model)
+
+        # Gesture type embedding (NEW)
+        self.gesture_embed = GestureTypeEmbedding(d_model)
 
         # Positional encoding
         self.pos_encoder = PositionalEncoding(d_model, dropout=dropout)
@@ -201,11 +243,13 @@ class GlobalEncoder(nn.Module):
         self.fc_mu = nn.Linear(d_model, latent_dim)
         self.fc_logvar = nn.Linear(d_model, latent_dim)
 
-    def forward(self, x, padding_mask=None):
+    def forward(self, x, padding_mask=None, gesture_type=None, audio_features=None):
         """
         Args:
             x: (B, T, in_channel) - motion sequence
             padding_mask: (B, T) - True for padded positions
+            gesture_type: (B,) - gesture type indices (0=beat, 1=semantic), optional
+            audio_features: (B, T, audio_dim) - audio features, optional
         Returns:
             mu: (B, latent_dim)
             logvar: (B, latent_dim)
@@ -214,6 +258,10 @@ class GlobalEncoder(nn.Module):
 
         # Project input
         x = self.input_proj(x)  # (B, T, d_model)
+
+        # Additive audio fusion (NEW)
+        if audio_features is not None and self.audio_input_proj is not None:
+            x = x + self.audio_input_proj(audio_features)
 
         # Add positional encoding
         x = self.pos_encoder(x)
@@ -236,6 +284,10 @@ class GlobalEncoder(nn.Module):
         # Extract [CLS] token as global representation
         cls_output = x[:, 0, :]  # (B, d_model)
 
+        # Add gesture type embedding (NEW)
+        if gesture_type is not None:
+            cls_output = cls_output + self.gesture_embed(gesture_type)
+
         # Project to mu and logvar
         mu = self.fc_mu(cls_output)  # (B, latent_dim)
         logvar = self.fc_logvar(cls_output)  # (B, latent_dim)
@@ -245,7 +297,8 @@ class GlobalEncoder(nn.Module):
 
 class LengthConditionedDecoder(nn.Module):
     """Transformer decoder that generates motion conditioned on global latent and target length"""
-    def __init__(self, out_channel, d_model, latent_dim, nhead=8, num_layers=4, dim_feedforward=1024, dropout=0.1, max_len=1024):
+    def __init__(self, out_channel, d_model, latent_dim, nhead=8, num_layers=4,
+                 dim_feedforward=1024, dropout=0.1, max_len=1024, audio_dim=None):
         super().__init__()
 
         self.d_model = d_model
@@ -253,6 +306,16 @@ class LengthConditionedDecoder(nn.Module):
 
         # Length embedding
         self.length_embed = LengthEmbedding(d_model, max_len)
+
+        # Gesture type embedding (NEW)
+        self.gesture_embed = GestureTypeEmbedding(d_model)
+
+        # Audio projection and positional encoding for decoder memory (NEW)
+        self.audio_proj = None
+        self.audio_pos_encoder = None
+        if audio_dim is not None:
+            self.audio_proj = AudioProjection(audio_dim, d_model)
+            self.audio_pos_encoder = PositionalEncoding(d_model, max_len=max_len * 2, dropout=dropout)
 
         # Project latent to memory tokens
         self.latent_proj = nn.Linear(latent_dim, d_model)
@@ -278,12 +341,16 @@ class LengthConditionedDecoder(nn.Module):
         # Output projection
         self.output_proj = nn.Linear(d_model, out_channel)
 
-    def forward(self, z, target_length, padding_mask=None):
+    def forward(self, z, target_length, padding_mask=None, gesture_type=None,
+                lengths=None, audio_features=None):
         """
         Args:
             z: (B, latent_dim) - global latent
             target_length: int - desired output sequence length
             padding_mask: (B, T) - optional padding mask
+            gesture_type: (B,) - gesture type indices, optional
+            lengths: (B,) - per-sample true lengths, optional (overrides uniform target_length)
+            audio_features: (B, T, audio_dim) - audio features, optional
         Returns:
             (B, target_length, out_channel)
         """
@@ -298,9 +365,24 @@ class LengthConditionedDecoder(nn.Module):
         memory = memory.view(B, self.num_memory_tokens, self.d_model)  # (B, num_memory_tokens, d_model)
 
         # Add length conditioning to memory
-        length_tensor = torch.tensor([target_length] * B, device=device)
-        length_embed = self.length_embed(length_tensor)  # (B, d_model)
+        if lengths is not None:
+            length_embed = self.length_embed(lengths)  # (B, d_model)
+        else:
+            length_tensor = torch.tensor([target_length] * B, device=device)
+            length_embed = self.length_embed(length_tensor)  # (B, d_model)
         memory = memory + length_embed.unsqueeze(1)  # Broadcast add
+
+        # Add gesture type to memory tokens (NEW)
+        if gesture_type is not None:
+            memory = memory + self.gesture_embed(gesture_type).unsqueeze(1)
+
+        # Build combined memory: [latent_mem | audio_mem] (NEW)
+        if audio_features is not None and self.audio_proj is not None:
+            audio_mem = self.audio_proj(audio_features)  # (B, T_audio, d_model)
+            audio_mem = self.audio_pos_encoder(audio_mem)  # CRITICAL: add temporal position info
+            combined_memory = torch.cat([memory, audio_mem], dim=1)  # (B, 8+T_audio, d_model)
+        else:
+            combined_memory = memory
 
         # Create query sequence of target length
         queries = self.query_embed.expand(B, target_length, -1)  # (B, T, d_model)
@@ -311,7 +393,7 @@ class LengthConditionedDecoder(nn.Module):
         # Apply transformer decoder layers
         x = queries
         for layer in self.layers:
-            x = layer(x, memory, tgt_key_padding_mask=padding_mask)
+            x = layer(x, combined_memory, tgt_key_padding_mask=padding_mask)
 
         x = self.norm(x)
 
@@ -345,8 +427,9 @@ class LengthConditionedVAE(nn.Module):
     Key features:
     - Global latent z captures motion content/style
     - Length conditioning controls output duration
+    - Gesture type conditioning (beat vs semantic)
+    - Audio conditioning (Wav2Vec 2.0 features)
     - Hierarchical levels for coarse-to-fine generation
-    - No need for separate prior model (PixelSNAIL)
 
     Sampling:
         z = torch.randn(batch_size, latent_dim)
@@ -356,8 +439,8 @@ class LengthConditionedVAE(nn.Module):
             self,
             in_channel=165,
             d_model=256,
-            latent_dim=256,  # Global latent dimension
-            embed_dim=64,    # Per-level latent dimension (for hierarchical)
+            latent_dim=256,
+            embed_dim=64,
             nhead=8,
             num_encoder_layers=4,
             num_decoder_layers=4,
@@ -365,6 +448,7 @@ class LengthConditionedVAE(nn.Module):
             n_level=3,
             dropout=0.1,
             max_len=1024,
+            audio_dim=None,
             # Legacy parameters (ignored)
             channel=None,
             n_res_block=None,
@@ -381,10 +465,11 @@ class LengthConditionedVAE(nn.Module):
         self.n_level = n_level
         self.max_len = max_len
 
-        # Global encoder: sequence → single latent
+        # Global encoder: sequence -> single latent
         self.encoder = GlobalEncoder(
             in_channel, d_model, latent_dim,
-            nhead, num_encoder_layers, dim_feedforward, dropout
+            nhead, num_encoder_layers, dim_feedforward, dropout,
+            audio_dim=audio_dim,
         )
 
         # Hierarchical VAE levels on the global latent
@@ -393,10 +478,11 @@ class LengthConditionedVAE(nn.Module):
             level_dim = latent_dim // n_level
             self.vae_levels.append(VAELevel(level_dim))
 
-        # Length-conditioned decoder: latent + length → sequence
+        # Length-conditioned decoder: latent + length -> sequence
         self.decoder = LengthConditionedDecoder(
             in_channel, d_model, latent_dim,
-            nhead, num_decoder_layers, dim_feedforward, dropout, max_len
+            nhead, num_decoder_layers, dim_feedforward, dropout, max_len,
+            audio_dim=audio_dim,
         )
 
         # Optional SMPLX layer
@@ -406,13 +492,15 @@ class LengthConditionedVAE(nn.Module):
         else:
             self.smplx_layer = None
 
-    def encode(self, x, padding_mask=None):
+    def encode(self, x, padding_mask=None, gesture_type=None, audio_features=None):
         """
         Encode motion sequence to global latent.
 
         Args:
             x: (B, T, in_channel) - motion sequence
             padding_mask: (B, T) - optional padding mask
+            gesture_type: (B,) - gesture type indices, optional
+            audio_features: (B, T, audio_dim) - audio features, optional
 
         Returns:
             z: (B, latent_dim) - sampled latent
@@ -421,7 +509,8 @@ class LengthConditionedVAE(nn.Module):
             kl_losses: list of KL losses per level
         """
         # Get global mu and logvar
-        mu, logvar = self.encoder(x, padding_mask)  # (B, latent_dim)
+        mu, logvar = self.encoder(x, padding_mask, gesture_type=gesture_type,
+                                  audio_features=audio_features)
 
         # Reparameterize the full latent
         std = torch.exp(0.5 * logvar)
@@ -436,19 +525,18 @@ class LengthConditionedVAE(nn.Module):
             start_idx = i * level_dim
             end_idx = start_idx + level_dim
             if i == self.n_level - 1:
-                # Last level takes remaining dimensions
                 end_idx = self.latent_dim
 
             mu_i = mu[:, start_idx:end_idx]
             logvar_i = logvar[:, start_idx:end_idx]
 
-            # KL divergence for this level
             kl_i = -0.5 * torch.sum(1 + logvar_i - mu_i.pow(2) - logvar_i.exp(), dim=-1)
             kl_losses.append(kl_i.mean())
 
         return z, mu, logvar, kl_losses
 
-    def decode(self, z, length, padding_mask=None):
+    def decode(self, z, length, padding_mask=None, gesture_type=None, lengths=None,
+               audio_features=None):
         """
         Decode global latent to motion sequence of specified length.
 
@@ -456,19 +544,27 @@ class LengthConditionedVAE(nn.Module):
             z: (B, latent_dim) - global latent
             length: int - desired output length
             padding_mask: (B, T) - optional padding mask
+            gesture_type: (B,) - gesture type indices, optional
+            lengths: (B,) - per-sample true lengths, optional
+            audio_features: (B, T, audio_dim) - audio features, optional
 
         Returns:
             (B, length, out_channel) - generated motion
         """
-        return self.decoder(z, length, padding_mask)
+        return self.decoder(z, length, padding_mask, gesture_type=gesture_type,
+                           lengths=lengths, audio_features=audio_features)
 
-    def forward(self, x, padding_mask=None, compute_geometry=False, return_intermediate=False):
+    def forward(self, x, padding_mask=None, gesture_type=None, lengths=None,
+                audio_features=None, compute_geometry=False, return_intermediate=False):
         """
         Forward pass: encode input, decode to same length.
 
         Args:
             x: (B, T, in_channel) - input motion
             padding_mask: (B, T) - optional padding mask
+            gesture_type: (B,) - gesture type indices, optional
+            lengths: (B,) - per-sample true lengths, optional
+            audio_features: (B, T, audio_dim) - audio features, optional
             compute_geometry: whether to compute SMPLX geometry
             return_intermediate: whether to return intermediate outputs per level
 
@@ -479,13 +575,17 @@ class LengthConditionedVAE(nn.Module):
         B, T, _ = x.shape
 
         # Encode
-        z, mu, logvar, kl_losses = self.encode(x, padding_mask)
+        z, mu, logvar, kl_losses = self.encode(x, padding_mask, gesture_type=gesture_type,
+                                               audio_features=audio_features)
 
         if return_intermediate:
-            return self._forward_with_intermediate(z, T, kl_losses, x, padding_mask, compute_geometry)
+            return self._forward_with_intermediate(z, T, kl_losses, x, padding_mask,
+                                                   compute_geometry, gesture_type=gesture_type,
+                                                   lengths=lengths, audio_features=audio_features)
 
         # Decode to same length as input
-        recon = self.decode(z, T, padding_mask)
+        recon = self.decode(z, T, padding_mask, gesture_type=gesture_type,
+                           lengths=lengths, audio_features=audio_features)
 
         # Total KL loss
         total_kl = sum(kl_losses)
@@ -496,24 +596,25 @@ class LengthConditionedVAE(nn.Module):
 
         return recon, total_kl
 
-    def _forward_with_intermediate(self, z, length, kl_losses, x, padding_mask, compute_geometry):
+    def _forward_with_intermediate(self, z, length, kl_losses, x, padding_mask,
+                                   compute_geometry, gesture_type=None, lengths=None,
+                                   audio_features=None):
         """Forward with intermediate outputs for progressive training."""
         intermediate_outputs = []
         level_dim = self.latent_dim // self.n_level
 
         for i in range(self.n_level):
-            # Use only first (i+1) levels of latent
             end_idx = (i + 1) * level_dim
             if i == self.n_level - 1:
                 end_idx = self.latent_dim
 
             z_partial = z.clone()
-            # Zero out unused levels
             if end_idx < self.latent_dim:
                 z_partial[:, end_idx:] = 0
 
-            # Decode with partial latent
-            level_output = self.decode(z_partial, length, padding_mask)
+            level_output = self.decode(z_partial, length, padding_mask,
+                                       gesture_type=gesture_type, lengths=lengths,
+                                       audio_features=audio_features)
             intermediate_outputs.append(level_output)
 
         total_kl = sum(kl_losses)
@@ -524,26 +625,28 @@ class LengthConditionedVAE(nn.Module):
 
         return intermediate_outputs, total_kl
 
-    def sample(self, batch_size, length, device='cuda', temperature=1.0):
+    def sample(self, batch_size, length, device='cuda', temperature=1.0,
+               gesture_type=None, audio_features=None):
         """
         Sample motion sequences of specified length.
 
         Args:
             batch_size: number of samples
-            length: desired sequence length (can be any positive integer!)
+            length: desired sequence length
             device: device to generate on
-            temperature: sampling temperature (1.0 = standard, <1.0 = more conservative)
+            temperature: sampling temperature
+            gesture_type: (B,) - gesture type indices, optional
+            audio_features: (B, T, audio_dim) - audio features, optional
 
         Returns:
             (batch_size, length, out_channel) - generated motion
         """
-        # Sample from standard normal prior
         z = torch.randn(batch_size, self.latent_dim, device=device) * temperature
+        return self.decode(z, length, gesture_type=gesture_type,
+                          audio_features=audio_features)
 
-        # Decode to desired length
-        return self.decode(z, length)
-
-    def interpolate(self, x1, x2, num_steps=10, length=None):
+    def interpolate(self, x1, x2, num_steps=10, length=None, gesture_type=None,
+                    audio_features=None):
         """
         Interpolate between two motion sequences in latent space.
 
@@ -552,6 +655,8 @@ class LengthConditionedVAE(nn.Module):
             x2: (1, T2, D) - second motion
             num_steps: number of interpolation steps
             length: output length (default: average of T1 and T2)
+            gesture_type: (B,) - gesture type indices, optional
+            audio_features: (B, T, audio_dim) - audio features, optional
 
         Returns:
             (num_steps, length, D) - interpolated motions
@@ -559,17 +664,16 @@ class LengthConditionedVAE(nn.Module):
         if length is None:
             length = (x1.size(1) + x2.size(1)) // 2
 
-        # Encode both
         z1, _, _, _ = self.encode(x1)
         z2, _, _, _ = self.encode(x2)
 
-        # Interpolate in latent space
         alphas = torch.linspace(0, 1, num_steps, device=z1.device)
         interpolated = []
 
         for alpha in alphas:
             z_interp = (1 - alpha) * z1 + alpha * z2
-            motion = self.decode(z_interp, length)
+            motion = self.decode(z_interp, length, gesture_type=gesture_type,
+                                audio_features=audio_features)
             interpolated.append(motion)
 
         return torch.cat(interpolated, dim=0)
@@ -579,14 +683,16 @@ class LengthConditionedVAE(nn.Module):
         kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1)
         return kl.mean()
 
-    def decode_partial_levels(self, x, num_levels=None, padding_mask=None):
+    def decode_partial_levels(self, x, num_levels=None, padding_mask=None,
+                              gesture_type=None, lengths=None, audio_features=None):
         """Decode using only first num_levels (for visualization)."""
         if num_levels is None:
             num_levels = self.n_level
         num_levels = min(num_levels, self.n_level)
 
         B, T, _ = x.shape
-        z, mu, logvar, kl_losses = self.encode(x, padding_mask)
+        z, mu, logvar, kl_losses = self.encode(x, padding_mask, gesture_type=gesture_type,
+                                               audio_features=audio_features)
 
         level_dim = self.latent_dim // self.n_level
         end_idx = num_levels * level_dim
@@ -597,7 +703,8 @@ class LengthConditionedVAE(nn.Module):
         if end_idx < self.latent_dim:
             z_partial[:, end_idx:] = 0
 
-        recon = self.decode(z_partial, T, padding_mask)
+        recon = self.decode(z_partial, T, padding_mask, gesture_type=gesture_type,
+                           lengths=lengths, audio_features=audio_features)
         total_kl = sum(kl_losses[:num_levels])
 
         return recon, total_kl
@@ -618,51 +725,72 @@ def create_padding_mask(lengths, max_len, device='cuda'):
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    # Test with new model size and audio/gesture conditioning
     model = LengthConditionedVAE(
         in_channel=165,
-        d_model=256,
-        latent_dim=256,
+        d_model=512,
+        latent_dim=512,
         embed_dim=64,
         nhead=8,
-        num_encoder_layers=4,
-        num_decoder_layers=4,
-        dim_feedforward=1024,
+        num_encoder_layers=6,
+        num_decoder_layers=6,
+        dim_feedforward=2048,
         n_level=3,
         dropout=0.1,
+        audio_dim=768,
     ).to(device)
 
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Test reconstruction with different input lengths
-    print("\n=== Reconstruction Test ===")
+    # Test reconstruction with audio + gesture_type + padding_mask
+    print("\n=== Reconstruction Test with Audio + Gesture Type ===")
     for seq_len in [32, 64, 128]:
         x = torch.randn(2, seq_len, 165).to(device)
-        recon, kl = model(x)
+        audio = torch.randn(2, seq_len, 768).to(device)
+        gesture_type = torch.tensor([0, 1], dtype=torch.long, device=device)
+        lengths = torch.tensor([seq_len, seq_len], dtype=torch.long, device=device)
+
+        recon, kl = model(x, gesture_type=gesture_type, lengths=lengths, audio_features=audio)
         print(f"Input: {x.shape} -> Recon: {recon.shape}, KL: {kl.item():.4f}")
 
-    # Test generation with arbitrary lengths
-    print("\n=== Generation Test (arbitrary length) ===")
-    for length in [50, 100, 200, 500]:
-        samples = model.sample(batch_size=4, length=length, device=device)
-        print(f"Generated: {samples.shape}")
+    # Test with padding mask (variable length)
+    print("\n=== Variable Length with Padding Mask ===")
+    B, T_max = 4, 100
+    actual_lengths = torch.tensor([30, 50, 80, 100], dtype=torch.long, device=device)
+    padding_mask = create_padding_mask(actual_lengths, T_max, device)
+    x = torch.randn(B, T_max, 165).to(device)
+    audio = torch.randn(B, T_max, 768).to(device)
+    gesture_type = torch.tensor([0, 1, 0, 1], dtype=torch.long, device=device)
 
-    # Test interpolation
-    print("\n=== Interpolation Test ===")
-    x1 = torch.randn(1, 64, 165).to(device)
-    x2 = torch.randn(1, 64, 165).to(device)
-    interpolated = model.interpolate(x1, x2, num_steps=5, length=100)
-    print(f"Interpolated: {interpolated.shape}")
+    recon, kl = model(x, padding_mask=padding_mask, gesture_type=gesture_type,
+                      lengths=actual_lengths, audio_features=audio)
+    print(f"Variable-length input: {x.shape} -> Recon: {recon.shape}, KL: {kl.item():.4f}")
+
+    # Test without audio (backward compat)
+    print("\n=== Backward Compatibility (no audio) ===")
+    model_compat = LengthConditionedVAE(
+        in_channel=165, d_model=256, latent_dim=256, embed_dim=64,
+        nhead=8, num_encoder_layers=4, num_decoder_layers=4,
+        dim_feedforward=1024, n_level=3, dropout=0.1,
+    ).to(device)
+    print(f"Compat model parameters: {sum(p.numel() for p in model_compat.parameters()):,}")
+
+    x = torch.randn(2, 64, 165).to(device)
+    recon, kl = model_compat(x)
+    print(f"No audio: Input: {x.shape} -> Recon: {recon.shape}, KL: {kl.item():.4f}")
+
+    # Test generation
+    print("\n=== Generation Test ===")
+    for length in [50, 100, 200]:
+        samples = model.sample(batch_size=4, length=length, device=device,
+                              gesture_type=torch.zeros(4, dtype=torch.long, device=device))
+        print(f"Generated: {samples.shape}")
 
     # Test intermediate outputs
     print("\n=== Intermediate Outputs Test ===")
     x = torch.randn(2, 64, 165).to(device)
-    intermediates, kl = model(x, return_intermediate=True)
+    audio = torch.randn(2, 64, 768).to(device)
+    gesture_type = torch.tensor([0, 1], dtype=torch.long, device=device)
+    intermediates, kl = model(x, gesture_type=gesture_type, audio_features=audio,
+                              return_intermediate=True)
     print(f"Intermediate outputs: {[i.shape for i in intermediates]}")
-
-    # Test with variable length training simulation
-    print("\n=== Variable Length Training Simulation ===")
-    for _ in range(3):
-        seq_len = torch.randint(32, 256, (1,)).item()
-        x = torch.randn(4, seq_len, 165).to(device)
-        recon, kl = model(x)
-        print(f"Train on length {seq_len}: recon={recon.shape}, KL={kl.item():.4f}")

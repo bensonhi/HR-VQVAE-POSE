@@ -53,6 +53,10 @@ def model_option_parser(model_type, conf_path):
         if 'stride' in model:
             options['stride'] = model.getint('stride')
 
+        # Audio dimension for audio conditioning
+        if 'audio_dim' in model:
+            options['audio_dim'] = model.getint('audio_dim')
+
         # Check for SMPLX parameters
         if 'use_smplx' in model:
             options['use_smplx'] = model.getboolean('use_smplx')

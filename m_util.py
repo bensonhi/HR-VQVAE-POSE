@@ -35,6 +35,7 @@ def create_model_object(model_type, options):
             n_level=options['n_level'],
             dropout=options.get('dropout', 0.1),
             max_len=options.get('max_len', 1024),
+            audio_dim=options.get('audio_dim', None),
             use_smplx=options.get('use_smplx', False),
             smplx_model_path=options.get('smplx_model_path', 'models_smplx_v1_1/models')
         )

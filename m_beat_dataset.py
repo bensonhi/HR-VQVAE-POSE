@@ -1,259 +1,355 @@
 import os
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import glob
-from typing import Optional, Union
+from typing import Optional, Union, List, Tuple
 from tqdm import tqdm
 
+
+# =============================================================================
+# Gesture label parsing
+# =============================================================================
+
+# Labels that map to beat (0)
+BEAT_LABELS = {'01_beat_align', '00_nogesture', 'habit'}
+
+
+def parse_sem_file(sem_path: str, total_frames: int, fps: int = 30) -> Tuple[List[Tuple[int, int]], np.ndarray]:
+    """
+    Parse a .sem tab-separated file into per-frame gesture labels and valid regions.
+
+    Format expected: each line is "start_time\tend_time\tlabel" (times in seconds).
+
+    Args:
+        sem_path: Path to .sem file
+        total_frames: Total number of frames in the corresponding pose sequence
+        fps: Frame rate (default 30)
+
+    Returns:
+        valid_regions: list of (start_frame, end_frame) tuples excluding need_cut segments
+        gesture_labels: np.array of shape (total_frames,) with 0=beat, 1=semantic
+    """
+    gesture_labels = np.zeros(total_frames, dtype=np.int64)  # default beat
+    need_cut_mask = np.zeros(total_frames, dtype=bool)
+
+    if not os.path.exists(sem_path):
+        # No sem file: treat entire sequence as one valid region with beat label
+        return [(0, total_frames)], gesture_labels
+
+    with open(sem_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split('\t')
+            if len(parts) < 3:
+                parts = line.split()
+            if len(parts) < 3:
+                continue
+
+            try:
+                start_time = float(parts[0])
+                end_time = float(parts[1])
+                label = parts[2].strip()
+            except (ValueError, IndexError):
+                continue
+
+            start_frame = int(start_time * fps)
+            end_frame = min(int(end_time * fps), total_frames)
+
+            if start_frame >= total_frames or start_frame >= end_frame:
+                continue
+
+            if label == 'need_cut':
+                need_cut_mask[start_frame:end_frame] = True
+            elif label in BEAT_LABELS:
+                gesture_labels[start_frame:end_frame] = 0
+            else:
+                gesture_labels[start_frame:end_frame] = 1  # semantic
+
+    # Build valid regions (contiguous non-need_cut regions)
+    valid_regions = []
+    in_region = False
+    region_start = 0
+
+    for i in range(total_frames):
+        if not need_cut_mask[i]:
+            if not in_region:
+                region_start = i
+                in_region = True
+        else:
+            if in_region:
+                valid_regions.append((region_start, i))
+                in_region = False
+
+    if in_region:
+        valid_regions.append((region_start, total_frames))
+
+    return valid_regions, gesture_labels
+
+
+# =============================================================================
+# Variable-length BEAT2 Dataset
+# =============================================================================
 
 class BEAT2PoseDataset(Dataset):
     def __init__(self,
                  data_path: str,
                  language: str = 'english',
+                 min_length: int = 5,
+                 max_length: int = 300,
+                 pose_dims: int = 165,
+                 use_axis_angle: bool = True,
+                 audio_dir: Optional[str] = None,
+                 # Legacy parameters (ignored, kept for backward compat)
                  sequence_length: int = 120,
                  stride: int = 30,
-                 pose_dims: int = 165,
                  normalize: bool = False,
-                 use_axis_angle: bool = False,
                  load_gt_geometry: bool = False,
                  compute_gt_on_fly: bool = False,
                  smplx_model_path: str = 'models_smplx_v1_1/models'):
         """
-        BEAT2 Pose Sequence Dataset
+        BEAT2 Pose Dataset with variable-length clips, gesture type, and audio conditioning.
 
         Args:
             data_path: Path to BEAT2 directory
-            language: Language subset ('english', 'chinese', 'spanish', 'japanese')
-            sequence_length: Length of pose sequences to extract
-            stride: Stride between sequences
-            pose_dims: Dimension of pose data (165 for SMPLX axis-angle, 381 for joints)
-            normalize: Whether to normalize pose data
-            use_axis_angle: If True, load axis-angle poses (165D). If False, load joint positions (381D)
-            load_gt_geometry: If True, load/compute ground truth vertices and joints for supervision
-            compute_gt_on_fly: If True, compute GT geometry from poses on-the-fly instead of loading precomputed.
-                              Requires use_axis_angle=True and axis-angle poses in dataset.
-            smplx_model_path: Path to SMPLX models (used when compute_gt_on_fly=True)
+            language: Language subset
+            min_length: Minimum clip length in frames
+            max_length: Maximum clip length in frames
+            pose_dims: Dimension of pose data (165 for SMPLX axis-angle)
+            use_axis_angle: If True, load axis-angle poses (165D)
+            audio_dir: Path to wav2vec_30 features directory. If None, auto-constructed.
         """
         self.data_path = data_path
         self.language = language
-        self.sequence_length = sequence_length
-        self.stride = stride
+        self.min_length = min_length
+        self.max_length = max_length
         self.pose_dims = pose_dims
-        self.normalize = normalize
         self.use_axis_angle = use_axis_angle
-        self.load_gt_geometry = load_gt_geometry
-        self.compute_gt_on_fly = compute_gt_on_fly
-        self.smplx_model_path = smplx_model_path
 
-        # Initialize SMPLX model if computing GT on-the-fly
-        self.smplx_model = None
-        if self.compute_gt_on_fly and self.load_gt_geometry:
-            if not self.use_axis_angle:
-                raise ValueError("compute_gt_on_fly requires use_axis_angle=True")
-
-            print(f"Initializing SMPLX model from {smplx_model_path} for on-the-fly GT computation...")
-            try:
-                import smplx
-                self.smplx_model = smplx.create(
-                    smplx_model_path,
-                    model_type='smplx',
-                    gender='neutral',
-                    use_face_contour=False,
-                    use_pca=False,
-                    ext='npz'
-                )
-                # Freeze parameters
-                for param in self.smplx_model.parameters():
-                    param.requires_grad = False
-                print("SMPLX model loaded successfully!")
-            except Exception as e:
-                print(f"Warning: Failed to load SMPLX model: {e}")
-                print("Falling back to loading pre-computed geometry if available.")
-                self.compute_gt_on_fly = False
-        
         # Determine the correct language folder
         lang_folders = {
             'english': 'beat_english_v2.0.0',
-            'chinese': 'beat_chinese_v2.0.0', 
+            'chinese': 'beat_chinese_v2.0.0',
             'spanish': 'beat_spanish_v2.0.0',
             'japanese': 'beat_japanese_v2.0.0'
         }
-        
-        # All languages have pose data in smplxflame_30 folder
-        lang_folder = lang_folders.get(language, 'beat_chinese_v2.0.0')
-        self.pose_files = glob.glob(os.path.join(data_path, lang_folder, 'smplxflame_30', '*.npz'))
-        self.use_semantic = False
-        
-        # Load and process sequences
-        self.sequences = []
-        self._load_sequences()
-        
-        print(f"Loaded {len(self.sequences)} pose sequences from {language} BEAT2 data")
-    
-    def _load_sequences(self):
-        """Load all pose sequences from files"""
-        if self.use_semantic:
-            self._load_semantic_sequences()
-        else:
-            self._load_pose_sequences()
-    
-    def _load_semantic_sequences(self):
-        """Load semantic feature sequences for English"""
-        print(f"Loading semantic sequences from {len(self.pose_files)} files...")
-        for file_path in tqdm(self.pose_files, desc="Loading files"):
-            try:
-                # Read semantic features (assume they're text files with numerical data)
-                with open(file_path, 'r') as f:
-                    lines = f.readlines()
-                
-                # Convert text to numerical features (simple approach)
-                # In practice, you'd use proper text-to-feature conversion
-                features = []
-                for line in lines:
-                    # Simple word count features (replace with proper semantic features)
-                    words = line.strip().split()
-                    word_features = [len(words), len(line.strip())] + [hash(w) % 100 for w in words[:10]]
-                    # Pad or truncate to fixed size
-                    while len(word_features) < self.pose_dims:
-                        word_features.append(0.0)
-                    features.append(word_features[:self.pose_dims])
-                
-                if len(features) < self.sequence_length:
-                    continue
-                    
-                # Extract sequences with stride
-                for i in range(0, len(features) - self.sequence_length + 1, self.stride):
-                    sequence = np.array(features[i:i + self.sequence_length])
-                    if self.normalize:
-                        sequence = self._normalize_sequence(sequence)
-                    self.sequences.append(sequence)
-                    
-            except Exception as e:
-                print(f"Error loading {file_path}: {e}")
-                continue
-    
+        lang_folder = lang_folders.get(language, f'beat_{language}_v2.0.0')
+        lang_path = os.path.join(data_path, lang_folder)
+
+        self.pose_dir = os.path.join(lang_path, 'smplxflame_30')
+        self.sem_dir = os.path.join(lang_path, 'sem')
+        self.audio_dir = audio_dir or os.path.join(lang_path, 'wav2vec_30')
+
+        self.pose_files = sorted(glob.glob(os.path.join(self.pose_dir, '*.npz')))
+
+        # Per-file metadata storage
+        self.file_data = []  # list of dicts: {poses, audio, valid_regions, gesture_labels}
+        self.sample_index = []  # list of (file_idx, region_idx) for sampling
+
+        self._load_pose_sequences()
+
+        print(f"Loaded {len(self.file_data)} files, {len(self.sample_index)} sample entries "
+              f"from {language} BEAT2 data (variable-length [{min_length}, {max_length}])")
+
     def _load_pose_sequences(self):
-        """Load actual pose sequences"""
+        """Load all pose sequences, sem labels, and audio features."""
         print(f"Loading pose sequences from {len(self.pose_files)} files...")
+
+        avg_clip_length = (self.min_length + self.max_length) / 2.0
+
         for file_path in tqdm(self.pose_files, desc="Loading files"):
             try:
+                basename = os.path.splitext(os.path.basename(file_path))[0]
+
+                # Load poses
                 data = np.load(file_path)
-
-                # Choose between axis-angle poses or joint positions
                 if self.use_axis_angle:
-                    poses = data['poses']  # Shape: (T, 165) - axis-angle representation
+                    poses = data['poses']  # (T, 165)
                 else:
-                    poses = data['joints']  # Shape: (T, num_joints, 3) - joint positions
+                    poses = data['joints']
+                    if poses.ndim > 2:
+                        poses = poses.reshape(poses.shape[0], -1)
 
-                if len(poses) < self.sequence_length:
+                total_frames = poses.shape[0]
+
+                # Load audio features
+                audio_path = os.path.join(self.audio_dir, f'{basename}.npy')
+                if not os.path.exists(audio_path):
+                    continue  # Skip files without audio features
+
+                audio = np.load(audio_path)  # (T, 768)
+
+                # Ensure audio and pose lengths match
+                min_len = min(total_frames, audio.shape[0])
+                poses = poses[:min_len]
+                audio = audio[:min_len]
+                total_frames = min_len
+
+                if total_frames < self.min_length:
                     continue
 
-                # Load ground truth geometry if needed for supervision
-                # (only if not computing on-the-fly)
-                gt_joints = None
-                gt_vertices = None
-                if self.load_gt_geometry and not self.compute_gt_on_fly:
-                    gt_joints = data['joints'] if 'joints' in data else None
-                    gt_vertices = data['vertices'] if 'vertices' in data else None
+                # Load sem file and parse gesture labels
+                sem_path = os.path.join(self.sem_dir, f'{basename}.sem')
+                valid_regions, gesture_labels = parse_sem_file(sem_path, total_frames)
 
-                # Extract sequences with stride
-                for i in range(0, len(poses) - self.sequence_length + 1, self.stride):
-                    sequence = poses[i:i + self.sequence_length]
+                # Filter regions shorter than min_length
+                valid_regions = [(s, e) for s, e in valid_regions if (e - s) >= self.min_length]
 
-                    # Flatten if needed
-                    if sequence.ndim > 2:
-                        # Joint positions: (seq_len, num_joints, 3) -> (seq_len, num_joints*3)
-                        sequence = sequence.reshape(sequence.shape[0], -1)
+                if not valid_regions:
+                    continue
 
-                    sequence_data = {
-                        'poses': sequence.astype(np.float32)
-                    }
+                file_idx = len(self.file_data)
+                self.file_data.append({
+                    'poses': poses.astype(np.float32),
+                    'audio': audio.astype(np.float32),
+                    'valid_regions': valid_regions,
+                    'gesture_labels': gesture_labels,
+                })
 
-                    # Add ground truth geometry if available (pre-computed)
-                    if self.load_gt_geometry and not self.compute_gt_on_fly:
-                        if gt_joints is not None:
-                            gt_joints_seq = gt_joints[i:i + self.sequence_length]
-                            sequence_data['gt_joints'] = gt_joints_seq.astype(np.float32)
-                        if gt_vertices is not None:
-                            gt_vertices_seq = gt_vertices[i:i + self.sequence_length]
-                            sequence_data['gt_vertices'] = gt_vertices_seq.astype(np.float32)
-                    elif self.load_gt_geometry and self.compute_gt_on_fly:
-                        # Mark for on-the-fly computation (will compute in __getitem__)
-                        sequence_data['compute_gt'] = True
-
-                    self.sequences.append(sequence_data)
+                # Build sample index: weight each region by its length / avg_clip_length
+                for region_idx, (start, end) in enumerate(valid_regions):
+                    region_length = end - start
+                    num_samples = max(1, int(region_length / avg_clip_length))
+                    for _ in range(num_samples):
+                        self.sample_index.append((file_idx, region_idx))
 
             except Exception as e:
                 print(f"Error loading {file_path}: {e}")
                 continue
-    
-    def _normalize_sequence(self, sequence):
-        """Normalize pose sequence to [-1, 1] range"""
-        # Simple min-max normalization per sequence
-        seq_min = sequence.min(axis=0, keepdims=True)
-        seq_max = sequence.max(axis=0, keepdims=True)
-        normalized = 2.0 * (sequence - seq_min) / (seq_max - seq_min + 1e-8) - 1.0
-        return normalized.astype(np.float32)
-    
+
     def __len__(self):
-        return len(self.sequences)
-    
+        return len(self.sample_index)
+
     def __getitem__(self, idx):
-        sequence_data = self.sequences[idx]
+        file_idx, region_idx = self.sample_index[idx]
+        file_data = self.file_data[file_idx]
 
-        if isinstance(sequence_data, dict):
-            # New format with ground truth geometry
-            pose_sequence = torch.FloatTensor(sequence_data['poses'])
+        region_start, region_end = file_data['valid_regions'][region_idx]
+        region_length = region_end - region_start
 
-            # Prepare return dict
-            ret_dict = {'poses': pose_sequence}
+        # Sample random clip length
+        clip_length = np.random.randint(
+            self.min_length,
+            min(self.max_length, region_length) + 1
+        )
 
-            # Check if we need to compute GT on-the-fly
-            if sequence_data.get('compute_gt', False) and self.smplx_model is not None:
-                # Compute vertices and joints from axis-angle poses
-                with torch.no_grad():
-                    # pose_sequence shape: (seq_len, 165)
-                    seq_len = pose_sequence.shape[0]
+        # Sample random start within region
+        max_start = region_end - clip_length
+        clip_start = np.random.randint(region_start, max_start + 1)
 
-                    # Parse 165D pose into SMPLX parameters
-                    global_orient = pose_sequence[:, :3]
-                    body_pose = pose_sequence[:, 3:66]
-                    jaw_pose = pose_sequence[:, 66:69]
-                    leye_pose = pose_sequence[:, 69:72]
-                    reye_pose = pose_sequence[:, 72:75]
-                    left_hand_pose = pose_sequence[:, 75:120]
-                    right_hand_pose = pose_sequence[:, 120:165]
+        # Extract clip
+        poses = file_data['poses'][clip_start:clip_start + clip_length]
+        audio = file_data['audio'][clip_start:clip_start + clip_length]
 
-                    # SMPLX forward pass
-                    output = self.smplx_model(
-                        global_orient=global_orient,
-                        body_pose=body_pose,
-                        jaw_pose=jaw_pose,
-                        leye_pose=leye_pose,
-                        reye_pose=reye_pose,
-                        left_hand_pose=left_hand_pose,
-                        right_hand_pose=right_hand_pose,
-                        betas=torch.zeros(seq_len, 10),
-                        expression=torch.zeros(seq_len, 10),
-                        return_verts=True
-                    )
+        # Majority gesture type (tie -> semantic=1)
+        gesture_labels = file_data['gesture_labels'][clip_start:clip_start + clip_length]
+        semantic_count = np.sum(gesture_labels == 1)
+        beat_count = np.sum(gesture_labels == 0)
+        gesture_type = 1 if semantic_count >= beat_count else 0
 
-                    # Output shape: (seq_len, num_vertices, 3) and (seq_len, num_joints, 3)
-                    ret_dict['gt_vertices'] = output.vertices
-                    ret_dict['gt_joints'] = output.joints
-            else:
-                # Use pre-computed GT if available
-                if 'gt_joints' in sequence_data:
-                    ret_dict['gt_joints'] = torch.FloatTensor(sequence_data['gt_joints'])
-                if 'gt_vertices' in sequence_data:
-                    ret_dict['gt_vertices'] = torch.FloatTensor(sequence_data['gt_vertices'])
+        return {
+            'poses': torch.FloatTensor(poses),
+            'audio': torch.FloatTensor(audio),
+            'gesture_type': gesture_type,
+            'length': clip_length,
+        }
 
-            return ret_dict, torch.zeros(1)  # dummy label for compatibility
-        else:
-            # Legacy format (backward compatibility)
-            return torch.FloatTensor(sequence_data), torch.zeros(1)
 
+# =============================================================================
+# Collate function for variable-length batches
+# =============================================================================
+
+def variable_length_collate_fn(batch):
+    """
+    Collate variable-length samples into a padded batch.
+
+    Returns:
+        (data_dict, dummy_label) for backward compat with (data, label) unpacking.
+        data_dict contains: poses, audio, gesture_type, lengths, padding_mask
+    """
+    lengths = torch.tensor([item['length'] for item in batch], dtype=torch.long)
+    gesture_types = torch.tensor([item['gesture_type'] for item in batch], dtype=torch.long)
+    t_max = lengths.max().item()
+    batch_size = len(batch)
+
+    pose_dim = batch[0]['poses'].shape[-1]
+    audio_dim = batch[0]['audio'].shape[-1]
+
+    # Pad poses and audio
+    padded_poses = torch.zeros(batch_size, t_max, pose_dim)
+    padded_audio = torch.zeros(batch_size, t_max, audio_dim)
+    padding_mask = torch.ones(batch_size, t_max, dtype=torch.bool)  # True = padded
+
+    for i, item in enumerate(batch):
+        l = item['length']
+        padded_poses[i, :l] = item['poses']
+        padded_audio[i, :l] = item['audio']
+        padding_mask[i, :l] = False  # valid positions
+
+    data_dict = {
+        'poses': padded_poses,
+        'audio': padded_audio,
+        'gesture_type': gesture_types,
+        'lengths': lengths,
+        'padding_mask': padding_mask,
+    }
+
+    return data_dict, torch.zeros(batch_size)  # dummy label
+
+
+# =============================================================================
+# DataLoader factory
+# =============================================================================
+
+def get_beat_variable_length_loader(
+    data_path: str = 'BEAT2',
+    language: str = 'english',
+    batch_size: int = 32,
+    min_length: int = 5,
+    max_length: int = 300,
+    shuffle: bool = True,
+    num_workers: int = 8,
+    use_axis_angle: bool = True,
+    audio_dir: Optional[str] = None,
+):
+    """
+    Create a DataLoader for BEAT2 with variable-length clips, gesture type, and audio.
+
+    Args:
+        data_path: Path to BEAT2 directory
+        language: Language subset
+        batch_size: Batch size
+        min_length: Minimum clip length
+        max_length: Maximum clip length
+        shuffle: Whether to shuffle
+        num_workers: Number of data loading workers
+        use_axis_angle: Load axis-angle poses (165D)
+        audio_dir: Path to wav2vec features. If None, auto-constructed.
+    """
+    dataset = BEAT2PoseDataset(
+        data_path=data_path,
+        language=language,
+        min_length=min_length,
+        max_length=max_length,
+        use_axis_angle=use_axis_angle,
+        audio_dir=audio_dir,
+    )
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=True,
+        collate_fn=variable_length_collate_fn,
+    )
+
+
+# =============================================================================
+# Legacy classes and functions (kept for backward compatibility)
+# =============================================================================
 
 class AMASSDataset(Dataset):
     """AMASS Dataset (e.g., BMLrub) for SMPLX pose sequences"""
@@ -268,20 +364,6 @@ class AMASSDataset(Dataset):
                  load_gt_geometry: bool = False,
                  compute_gt_on_fly: bool = False,
                  smplx_model_path: str = 'models_smplx_v1_1/models'):
-        """
-        AMASS Pose Sequence Dataset
-
-        Args:
-            data_path: Path to AMASS directory (containing BMLrub, etc.)
-            subsets: List of subsets to load (e.g., ['BMLrub', 'BMLmovi'])
-            sequence_length: Length of pose sequences to extract
-            stride: Stride between sequences
-            target_fps: Target frame rate (AMASS is typically 120fps, will downsample to match)
-            normalize: Whether to normalize pose data
-            load_gt_geometry: If True, load/compute ground truth vertices and joints
-            compute_gt_on_fly: If True, compute GT geometry on-the-fly using SMPLX
-            smplx_model_path: Path to SMPLX models
-        """
         self.data_path = data_path
         self.subsets = subsets
         self.sequence_length = sequence_length
@@ -291,34 +373,12 @@ class AMASSDataset(Dataset):
         self.load_gt_geometry = load_gt_geometry
         self.compute_gt_on_fly = compute_gt_on_fly
         self.smplx_model_path = smplx_model_path
-
-        # Initialize SMPLX model if computing GT on-the-fly
         self.smplx_model = None
-        if self.compute_gt_on_fly and self.load_gt_geometry:
-            print(f"Initializing SMPLX model from {smplx_model_path} for on-the-fly GT computation...")
-            try:
-                import smplx
-                self.smplx_model = smplx.create(
-                    smplx_model_path,
-                    model_type='smplx',
-                    gender='neutral',
-                    use_face_contour=False,
-                    use_pca=False,
-                    ext='npz'
-                )
-                for param in self.smplx_model.parameters():
-                    param.requires_grad = False
-                print("SMPLX model loaded successfully!")
-            except Exception as e:
-                print(f"Warning: Failed to load SMPLX model: {e}")
-                self.compute_gt_on_fly = False
 
-        # Find all npz files in specified subsets
         self.pose_files = []
         for subset in subsets:
             subset_path = os.path.join(data_path, subset)
             if os.path.exists(subset_path):
-                # AMASS has subject folders containing npz files
                 for subject_dir in os.listdir(subset_path):
                     subject_path = os.path.join(subset_path, subject_dir)
                     if os.path.isdir(subject_path):
@@ -327,47 +387,25 @@ class AMASSDataset(Dataset):
 
         self.sequences = []
         self._load_sequences()
-
         print(f"Loaded {len(self.sequences)} pose sequences from AMASS {subsets}")
 
     def _load_sequences(self):
-        """Load all pose sequences from AMASS files"""
         print(f"Loading AMASS sequences from {len(self.pose_files)} files...")
-        print(f"Target FPS: {self.target_fps}")
         for file_path in tqdm(self.pose_files, desc="Loading AMASS files"):
             try:
                 data = np.load(file_path, allow_pickle=True)
-
-                # AMASS stores poses in 'poses' key with shape (T, 165)
                 if 'poses' not in data:
                     continue
-
-                poses = data['poses']  # Shape: (T, 165) - SMPLX axis-angle
-
-                # Get source frame rate and compute downsample factor
+                poses = data['poses']
                 source_fps = float(data.get('mocap_frame_rate', 120.0))
                 downsample_factor = max(1, int(round(source_fps / self.target_fps)))
-
-                # Downsample poses to target fps
                 if downsample_factor > 1:
                     poses = poses[::downsample_factor]
-
                 if len(poses) < self.sequence_length:
                     continue
-
-                # Extract sequences with stride
                 for i in range(0, len(poses) - self.sequence_length + 1, self.stride):
                     sequence = poses[i:i + self.sequence_length]
-
-                    sequence_data = {
-                        'poses': sequence.astype(np.float32)
-                    }
-
-                    if self.load_gt_geometry and self.compute_gt_on_fly:
-                        sequence_data['compute_gt'] = True
-
-                    self.sequences.append(sequence_data)
-
+                    self.sequences.append({'poses': sequence.astype(np.float32)})
             except Exception as e:
                 print(f"Error loading {file_path}: {e}")
                 continue
@@ -378,60 +416,25 @@ class AMASSDataset(Dataset):
     def __getitem__(self, idx):
         sequence_data = self.sequences[idx]
         pose_sequence = torch.FloatTensor(sequence_data['poses'])
-
-        ret_dict = {'poses': pose_sequence}
-
-        if sequence_data.get('compute_gt', False) and self.smplx_model is not None:
-            with torch.no_grad():
-                seq_len = pose_sequence.shape[0]
-                global_orient = pose_sequence[:, :3]
-                body_pose = pose_sequence[:, 3:66]
-                jaw_pose = pose_sequence[:, 66:69]
-                leye_pose = pose_sequence[:, 69:72]
-                reye_pose = pose_sequence[:, 72:75]
-                left_hand_pose = pose_sequence[:, 75:120]
-                right_hand_pose = pose_sequence[:, 120:165]
-
-                output = self.smplx_model(
-                    global_orient=global_orient,
-                    body_pose=body_pose,
-                    jaw_pose=jaw_pose,
-                    leye_pose=leye_pose,
-                    reye_pose=reye_pose,
-                    left_hand_pose=left_hand_pose,
-                    right_hand_pose=right_hand_pose,
-                    betas=torch.zeros(seq_len, 10),
-                    expression=torch.zeros(seq_len, 10),
-                    return_verts=True
-                )
-                ret_dict['gt_vertices'] = output.vertices
-                ret_dict['gt_joints'] = output.joints
-
-        return ret_dict, torch.zeros(1)
+        return {'poses': pose_sequence}, torch.zeros(1)
 
 
 class CombinedPoseDataset(Dataset):
-    """Combined dataset that merges multiple pose datasets (BEAT2 + AMASS)"""
+    """Combined dataset that merges multiple pose datasets"""
 
     def __init__(self, datasets: list):
-        """
-        Args:
-            datasets: List of Dataset objects to combine
-        """
         self.datasets = datasets
         self.cumulative_sizes = []
         total = 0
         for ds in datasets:
             total += len(ds)
             self.cumulative_sizes.append(total)
-
         print(f"Combined dataset: {total} total sequences from {len(datasets)} datasets")
 
     def __len__(self):
         return self.cumulative_sizes[-1] if self.cumulative_sizes else 0
 
     def __getitem__(self, idx):
-        # Find which dataset this index belongs to
         for i, cumsize in enumerate(self.cumulative_sizes):
             if idx < cumsize:
                 if i == 0:
@@ -441,117 +444,40 @@ class CombinedPoseDataset(Dataset):
         raise IndexError(f"Index {idx} out of range")
 
 
-def get_combined_pose_loader(beat2_path: str = 'BEAT2_joints_vertices',
-                             amass_path: str = 'AMASS',
-                             amass_subsets: list = ['BMLrub'],
-                             language: str = 'english',
-                             batch_size: int = 32,
-                             sequence_length: int = 25,
-                             shuffle: bool = True,
-                             num_workers: int = 8,
-                             use_axis_angle: bool = True,
-                             load_gt_geometry: bool = True,
-                             compute_gt_on_fly: bool = True,
-                             smplx_model_path: str = 'models_smplx_v1_1/models'):
-    """
-    Create a DataLoader that combines BEAT2 and AMASS datasets
-
-    Args:
-        beat2_path: Path to BEAT2 data directory
-        amass_path: Path to AMASS data directory
-        amass_subsets: List of AMASS subsets to include (e.g., ['BMLrub'])
-        language: BEAT2 language subset
-        batch_size: Batch size
-        sequence_length: Length of pose sequences
-        shuffle: Whether to shuffle data
-        num_workers: Number of parallel data loading workers
-        use_axis_angle: Load axis-angle (165D) poses
-        load_gt_geometry: Load/compute ground truth vertices and joints
-        compute_gt_on_fly: Compute GT geometry on-the-fly
-        smplx_model_path: Path to SMPLX models
-    """
+def get_combined_pose_loader(beat2_path='BEAT2_joints_vertices', amass_path='AMASS',
+                             amass_subsets=['BMLrub'], language='english',
+                             batch_size=32, sequence_length=25, shuffle=True,
+                             num_workers=8, use_axis_angle=True,
+                             load_gt_geometry=True, compute_gt_on_fly=True,
+                             smplx_model_path='models_smplx_v1_1/models'):
+    """Legacy loader combining BEAT2 + AMASS. Kept for backward compatibility."""
     datasets = []
-
-    # Load BEAT2 dataset
-    print("Loading BEAT2 dataset...")
     beat2_dataset = BEAT2PoseDataset(
-        data_path=beat2_path,
-        language=language,
-        sequence_length=sequence_length,
-        use_axis_angle=use_axis_angle,
-        load_gt_geometry=load_gt_geometry,
-        compute_gt_on_fly=compute_gt_on_fly,
-        smplx_model_path=smplx_model_path
+        data_path=beat2_path, language=language, sequence_length=sequence_length,
+        use_axis_angle=use_axis_angle, load_gt_geometry=load_gt_geometry,
+        compute_gt_on_fly=compute_gt_on_fly, smplx_model_path=smplx_model_path
     )
     datasets.append(beat2_dataset)
-
-    # Load AMASS dataset(s)
-    # AMASS is typically 120fps, downsample to 30fps to match BEAT2
-    print(f"Loading AMASS datasets: {amass_subsets}...")
     amass_dataset = AMASSDataset(
-        data_path=amass_path,
-        subsets=amass_subsets,
-        sequence_length=sequence_length,
-        target_fps=30,  # Downsample to match BEAT2's 30fps
-        load_gt_geometry=load_gt_geometry,
-        compute_gt_on_fly=compute_gt_on_fly,
+        data_path=amass_path, subsets=amass_subsets, sequence_length=sequence_length,
+        target_fps=30, load_gt_geometry=load_gt_geometry, compute_gt_on_fly=compute_gt_on_fly,
         smplx_model_path=smplx_model_path
     )
     datasets.append(amass_dataset)
-
-    # Combine datasets
     combined_dataset = CombinedPoseDataset(datasets)
-
-    from torch.utils.data import DataLoader
-    return DataLoader(
-        combined_dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=True
-    )
+    return DataLoader(combined_dataset, batch_size=batch_size, shuffle=shuffle,
+                      num_workers=num_workers, pin_memory=True)
 
 
-def get_beat_pose_loader(data_path: str,
-                        language: str = 'chinese',
-                        batch_size: int = 32,
-                        sequence_length: int = 120,
-                        shuffle: bool = True,
-                        num_workers: int = 0,
-                        use_axis_angle: bool = False,
-                        load_gt_geometry: bool = False,
-                        compute_gt_on_fly: bool = False,
-                        smplx_model_path: str = 'models_smplx_v1_1/models'):
-    """
-    Create a DataLoader for BEAT2 pose sequences
-
-    Args:
-        data_path: Path to BEAT2 data directory
-        language: Language subset
-        batch_size: Batch size
-        sequence_length: Length of pose sequences
-        shuffle: Whether to shuffle data
-        num_workers: Number of parallel data loading workers
-        use_axis_angle: Load axis-angle (165D) instead of joint positions (381D)
-        load_gt_geometry: Load/compute ground truth vertices and joints
-        compute_gt_on_fly: Compute GT geometry on-the-fly instead of loading pre-computed
-        smplx_model_path: Path to SMPLX models (for on-the-fly computation)
-    """
+def get_beat_pose_loader(data_path, language='chinese', batch_size=32, sequence_length=120,
+                         shuffle=True, num_workers=0, use_axis_angle=False,
+                         load_gt_geometry=False, compute_gt_on_fly=False,
+                         smplx_model_path='models_smplx_v1_1/models'):
+    """Legacy BEAT2 pose loader. Kept for backward compatibility."""
     dataset = BEAT2PoseDataset(
-        data_path=data_path,
-        language=language,
-        sequence_length=sequence_length,
-        use_axis_angle=use_axis_angle,
-        load_gt_geometry=load_gt_geometry,
-        compute_gt_on_fly=compute_gt_on_fly,
-        smplx_model_path=smplx_model_path
+        data_path=data_path, language=language, sequence_length=sequence_length,
+        use_axis_angle=use_axis_angle, load_gt_geometry=load_gt_geometry,
+        compute_gt_on_fly=compute_gt_on_fly, smplx_model_path=smplx_model_path
     )
-
-    from torch.utils.data import DataLoader
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=True  # Faster CPU-to-GPU transfer
-    )
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
+                      num_workers=num_workers, pin_memory=True)

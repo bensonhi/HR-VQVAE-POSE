@@ -10,14 +10,16 @@ from torchvision import utils
 
 
 @torch.no_grad()
-def vae_sampler(folder_name, model, data, dataset_name, run_num, epoch, batch_size):
+def vae_sampler(folder_name, model, data, dataset_name, run_num, epoch, batch_size,
+                padding_mask=None, gesture_type=None, lengths=None, audio_features=None):
     import os
     import numpy as np
     path = get_runtime_sampler_path(folder_name, dataset_name, run_num, epoch)
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
     with torch.no_grad():
-        out, _ = model(data)
+        out, _ = model(data, padding_mask=padding_mask, gesture_type=gesture_type,
+                       lengths=lengths, audio_features=audio_features)
 
     if 'beat2' in dataset_name.lower() or 'pose' in dataset_name.lower():
         # For pose data, save as numpy arrays instead of images
@@ -26,19 +28,26 @@ def vae_sampler(folder_name, model, data, dataset_name, run_num, epoch, batch_si
             'reconstructed': out.cpu().numpy()
         }
 
+        # Save conditioning info
+        if lengths is not None:
+            save_dict['lengths'] = lengths.cpu().numpy()
+        if gesture_type is not None:
+            save_dict['gesture_type'] = gesture_type.cpu().numpy()
+
         # Check if this is a multi-level model and generate samples for each level
         if hasattr(model, 'n_level') or (hasattr(model, 'module') and hasattr(model.module, 'n_level')):
-            # Get the actual model (unwrap DataParallel if needed)
             actual_model = model.module if hasattr(model, 'module') else model
 
             if hasattr(actual_model, 'decode_partial_levels'):
                 n_levels = actual_model.n_level
                 print(f"  Generating samples for {n_levels} levels...")
 
-                # Generate reconstruction for each level (1, 2, 3, ...)
                 for level in range(1, n_levels + 1):
-                    # Transformer model works directly with (B, T, D) format
-                    level_out, _ = actual_model.decode_partial_levels(data, num_levels=level)
+                    level_out, _ = actual_model.decode_partial_levels(
+                        data, num_levels=level, padding_mask=padding_mask,
+                        gesture_type=gesture_type, lengths=lengths,
+                        audio_features=audio_features
+                    )
                     save_dict[f'reconstructed_level_{level}'] = level_out.cpu().numpy()
                     print(f"    - Level {level} (using {level} VAE level(s))")
 
