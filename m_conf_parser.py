@@ -57,6 +57,10 @@ def model_option_parser(model_type, conf_path):
         if 'audio_dim' in model:
             options['audio_dim'] = model.getint('audio_dim')
 
+        # Free bits for KL floor
+        if 'free_bits' in model:
+            options['free_bits'] = model.getfloat('free_bits')
+
         # Check for SMPLX parameters
         if 'use_smplx' in model:
             options['use_smplx'] = model.getboolean('use_smplx')

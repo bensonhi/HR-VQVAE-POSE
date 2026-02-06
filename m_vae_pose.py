@@ -449,6 +449,7 @@ class LengthConditionedVAE(nn.Module):
             dropout=0.1,
             max_len=1024,
             audio_dim=None,
+            free_bits=0.25,
             # Legacy parameters (ignored)
             channel=None,
             n_res_block=None,
@@ -464,6 +465,7 @@ class LengthConditionedVAE(nn.Module):
         self.embed_dim = embed_dim
         self.n_level = n_level
         self.max_len = max_len
+        self.free_bits = free_bits
 
         # Global encoder: sequence -> single latent
         self.encoder = GlobalEncoder(
@@ -517,7 +519,9 @@ class LengthConditionedVAE(nn.Module):
         eps = torch.randn_like(std)
         z = mu + eps * std  # (B, latent_dim)
 
-        # Compute KL losses per level (split for hierarchical loss weighting)
+        # Compute KL losses per level with free bits
+        # Free bits: clamp per-dimension KL to a minimum, forcing the model
+        # to encode at least free_bits nats of information per latent dimension
         level_dim = self.latent_dim // self.n_level
         kl_losses = []
 
@@ -530,8 +534,16 @@ class LengthConditionedVAE(nn.Module):
             mu_i = mu[:, start_idx:end_idx]
             logvar_i = logvar[:, start_idx:end_idx]
 
-            kl_i = -0.5 * torch.sum(1 + logvar_i - mu_i.pow(2) - logvar_i.exp(), dim=-1)
-            kl_losses.append(kl_i.mean())
+            # Per-dimension KL: (B, D_level)
+            kl_per_dim = -0.5 * (1 + logvar_i - mu_i.pow(2) - logvar_i.exp())
+
+            # Apply free bits: clamp each dimension to minimum
+            if self.free_bits > 0:
+                kl_per_dim = torch.clamp(kl_per_dim, min=self.free_bits)
+
+            # Sum over dimensions, mean over batch
+            kl_i = kl_per_dim.sum(dim=-1).mean()
+            kl_losses.append(kl_i)
 
         return z, mu, logvar, kl_losses
 
