@@ -131,6 +131,113 @@ class TransformerDecoderBlockWithCrossAttn(nn.Module):
         return x
 
 
+class DualCrossAttnDecoderBlock(nn.Module):
+    """Decoder block with self-attn, dual cross-attn (z + audio), and FFN"""
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
+        super().__init__()
+
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.cross_attn_z = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.cross_attn_audio = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, d_model),
+            nn.Dropout(dropout),
+        )
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.norm4 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, z_memory, audio_memory=None, tgt_mask=None, tgt_key_padding_mask=None):
+        """
+        Args:
+            x: (B, T, D) - target sequence
+            z_memory: (B, M, D) - latent memory tokens
+            audio_memory: (B, T_audio, D) - projected audio features, or None
+        """
+        # Self-attention
+        attn_out, _ = self.self_attn(x, x, x, attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask)
+        x = self.norm1(x + self.dropout(attn_out))
+
+        # Cross-attention to z (always active — dedicated pathway)
+        cross_z_out, _ = self.cross_attn_z(x, z_memory, z_memory)
+        x = self.norm2(x + self.dropout(cross_z_out))
+
+        # Cross-attention to audio (skipped when audio_memory is None, e.g. sampling)
+        if audio_memory is not None:
+            cross_audio_out, _ = self.cross_attn_audio(x, audio_memory, audio_memory)
+            x = self.norm3(x + self.dropout(cross_audio_out))
+        else:
+            x = self.norm3(x)
+
+        # FFN
+        x = self.norm4(x + self.ffn(x))
+        return x
+
+
+class AdaLNCrossAttnDecoderBlock(nn.Module):
+    """Decoder block with AdaLN z-conditioning + single cross-attn for audio/z memory.
+
+    z conditions layer norms via learned scale/shift (DiT-style AdaLN).
+    This avoids adding a time-independent constant to the residual stream,
+    preserving temporal variation from audio cross-attention.
+    """
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, d_model),
+            nn.Dropout(dropout),
+        )
+        # Non-affine LayerNorms (AdaLN provides scale/shift from z)
+        self.norm1 = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.norm2 = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.norm3 = nn.LayerNorm(d_model, elementwise_affine=False)
+        self.dropout_module = nn.Dropout(dropout)
+        # AdaLN modulation: z_embed -> (scale1, shift1, scale2, shift2, scale3, shift3)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(d_model, 6 * d_model),
+        )
+        # Zero-init so AdaLN starts as identity (scale=0->1+0=1, shift=0)
+        nn.init.zeros_(self.adaLN_modulation[1].weight)
+        nn.init.zeros_(self.adaLN_modulation[1].bias)
+
+    def forward(self, x, z_embed, memory, tgt_key_padding_mask=None):
+        """
+        Args:
+            x: (B, T, D) - queries
+            z_embed: (B, D) - latent conditioning (broadcast across time)
+            memory: (B, M, D) - cross-attn memory (z_tokens+audio or z_tokens only)
+        """
+        mod = self.adaLN_modulation(z_embed)  # (B, 6*D)
+        s1, b1, s2, b2, s3, b3 = [m.unsqueeze(1) for m in mod.chunk(6, dim=-1)]
+
+        # Pre-norm self-attention with AdaLN
+        x_mod = self.norm1(x) * (1 + s1) + b1
+        attn_out, _ = self.self_attn(x_mod, x_mod, x_mod, key_padding_mask=tgt_key_padding_mask)
+        x = x + self.dropout_module(attn_out)
+
+        # Pre-norm cross-attention with AdaLN
+        x_mod = self.norm2(x) * (1 + s2) + b2
+        cross_out, _ = self.cross_attn(x_mod, memory, memory)
+        x = x + self.dropout_module(cross_out)
+
+        # Pre-norm FFN with AdaLN
+        x_mod = self.norm3(x) * (1 + s3) + b3
+        x = x + self.ffn(x_mod)
+        return x
+
+
 class LengthEmbedding(nn.Module):
     """Embedding for sequence length conditioning"""
     def __init__(self, d_model, max_len=1024):
@@ -298,11 +405,14 @@ class GlobalEncoder(nn.Module):
 class LengthConditionedDecoder(nn.Module):
     """Transformer decoder that generates motion conditioned on global latent and target length"""
     def __init__(self, out_channel, d_model, latent_dim, nhead=8, num_layers=4,
-                 dim_feedforward=1024, dropout=0.1, max_len=1024, audio_dim=None):
+                 dim_feedforward=1024, dropout=0.1, max_len=1024, audio_dim=None,
+                 num_memory_tokens=4,
+                 memory_dropout_prob=0.0):
         super().__init__()
 
         self.d_model = d_model
         self.max_len = max_len
+        self.memory_dropout_prob = memory_dropout_prob
 
         # Length embedding
         self.length_embed = LengthEmbedding(d_model, max_len)
@@ -321,7 +431,7 @@ class LengthConditionedDecoder(nn.Module):
         self.latent_proj = nn.Linear(latent_dim, d_model)
 
         # Create multiple memory tokens from single latent (richer conditioning)
-        self.num_memory_tokens = 8
+        self.num_memory_tokens = num_memory_tokens
         self.memory_expand = nn.Linear(d_model, d_model * self.num_memory_tokens)
 
         # Learnable query tokens (will be expanded to target length)
@@ -330,9 +440,9 @@ class LengthConditionedDecoder(nn.Module):
         # Positional encoding for queries
         self.pos_encoder = PositionalEncoding(d_model, max_len=max_len * 2, dropout=dropout)
 
-        # Transformer decoder layers with cross-attention
+        # Transformer decoder layers with AdaLN z-conditioning + unified cross-attention
         self.layers = nn.ModuleList([
-            TransformerDecoderBlockWithCrossAttn(d_model, nhead, dim_feedforward, dropout)
+            AdaLNCrossAttnDecoderBlock(d_model, nhead, dim_feedforward, dropout)
             for _ in range(num_layers)
         ])
 
@@ -357,50 +467,43 @@ class LengthConditionedDecoder(nn.Module):
         B = z.size(0)
         device = z.device
 
-        # Project latent to d_model
-        latent_features = self.latent_proj(z)  # (B, d_model)
-
-        # Expand to multiple memory tokens
-        memory = self.memory_expand(latent_features)  # (B, d_model * num_memory_tokens)
-        memory = memory.view(B, self.num_memory_tokens, self.d_model)  # (B, num_memory_tokens, d_model)
-
-        # Add length conditioning to memory
+        # z_embed for AdaLN: latent + length + gesture conditioning
+        z_embed = self.latent_proj(z)  # (B, d_model)
         if lengths is not None:
-            length_embed = self.length_embed(lengths)  # (B, d_model)
+            z_embed = z_embed + self.length_embed(lengths)
         else:
-            length_tensor = torch.tensor([target_length] * B, device=device)
-            length_embed = self.length_embed(length_tensor)  # (B, d_model)
-        memory = memory + length_embed.unsqueeze(1)  # Broadcast add
-
-        # Add gesture type to memory tokens (NEW)
+            z_embed = z_embed + self.length_embed(torch.tensor([target_length] * B, device=device))
         if gesture_type is not None:
-            memory = memory + self.gesture_embed(gesture_type).unsqueeze(1)
+            z_embed = z_embed + self.gesture_embed(gesture_type)
 
-        # Build combined memory: [latent_mem | audio_mem] (NEW)
+        # z memory tokens for cross-attention
+        z_memory = self.memory_expand(z_embed)  # (B, d_model * M)
+        z_memory = z_memory.view(B, self.num_memory_tokens, self.d_model)
+
+        # Memory token dropout (inverted dropout, classifier-free guidance style)
+        if self.training and self.memory_dropout_prob > 0:
+            keep_prob = 1.0 - self.memory_dropout_prob
+            mask = torch.bernoulli(torch.full(
+                (B, self.num_memory_tokens, 1), keep_prob, device=device))
+            z_memory = z_memory * mask / keep_prob
+
+        # Build cross-attention memory: [z_tokens, audio_tokens] or [z_tokens]
         if audio_features is not None and self.audio_proj is not None:
-            audio_mem = self.audio_proj(audio_features)  # (B, T_audio, d_model)
-            audio_mem = self.audio_pos_encoder(audio_mem)  # CRITICAL: add temporal position info
-            combined_memory = torch.cat([memory, audio_mem], dim=1)  # (B, 8+T_audio, d_model)
+            audio_memory = self.audio_pos_encoder(self.audio_proj(audio_features))
+            memory = torch.cat([z_memory, audio_memory], dim=1)  # (B, M+T, D)
         else:
-            combined_memory = memory
+            memory = z_memory  # (B, M, D) — sampling mode (ACTOR-style)
 
-        # Create query sequence of target length
-        queries = self.query_embed.expand(B, target_length, -1)  # (B, T, d_model)
+        # Queries with positional encoding
+        queries = self.pos_encoder(self.query_embed.expand(B, target_length, -1))
 
-        # Add positional encoding to queries
-        queries = self.pos_encoder(queries)
-
-        # Apply transformer decoder layers
+        # Decoder layers with AdaLN + unified cross-attention
         x = queries
         for layer in self.layers:
-            x = layer(x, combined_memory, tgt_key_padding_mask=padding_mask)
+            x = layer(x, z_embed=z_embed, memory=memory, tgt_key_padding_mask=padding_mask)
 
         x = self.norm(x)
-
-        # Project to output dimension
-        output = self.output_proj(x)  # (B, T, out_channel)
-
-        return output
+        return self.output_proj(x)
 
 
 class VAELevel(nn.Module):
@@ -449,8 +552,12 @@ class LengthConditionedVAE(nn.Module):
             dropout=0.1,
             max_len=1024,
             audio_dim=None,
-            free_bits=0.25,
+            target_kl=50.0,
+            num_memory_tokens=4,
+            condition_dropout_prob=0.0,
+            memory_dropout_prob=0.0,
             # Legacy parameters (ignored)
+            free_bits=None,
             channel=None,
             n_res_block=None,
             n_res_channel=None,
@@ -465,7 +572,8 @@ class LengthConditionedVAE(nn.Module):
         self.embed_dim = embed_dim
         self.n_level = n_level
         self.max_len = max_len
-        self.free_bits = free_bits
+        self.target_kl = target_kl
+        self.condition_dropout_prob = condition_dropout_prob
 
         # Global encoder: sequence -> single latent
         self.encoder = GlobalEncoder(
@@ -485,6 +593,8 @@ class LengthConditionedVAE(nn.Module):
             in_channel, d_model, latent_dim,
             nhead, num_decoder_layers, dim_feedforward, dropout, max_len,
             audio_dim=audio_dim,
+            num_memory_tokens=num_memory_tokens,
+            memory_dropout_prob=memory_dropout_prob,
         )
 
         # Optional SMPLX layer
@@ -508,7 +618,8 @@ class LengthConditionedVAE(nn.Module):
             z: (B, latent_dim) - sampled latent
             mu: (B, latent_dim) - mean
             logvar: (B, latent_dim) - log variance
-            kl_losses: list of KL losses per level
+            kl_loss: scalar KL loss (target-KL-adjusted)
+            raw_kl: scalar raw KL (for logging, no target clamping)
         """
         # Get global mu and logvar
         mu, logvar = self.encoder(x, padding_mask, gesture_type=gesture_type,
@@ -519,9 +630,7 @@ class LengthConditionedVAE(nn.Module):
         eps = torch.randn_like(std)
         z = mu + eps * std  # (B, latent_dim)
 
-        # Compute KL losses per level with free bits
-        # Free bits: clamp per-dimension KL to a minimum, forcing the model
-        # to encode at least free_bits nats of information per latent dimension
+        # Compute raw KL per level (no per-dimension clamping)
         level_dim = self.latent_dim // self.n_level
         kl_losses = []
 
@@ -537,15 +646,22 @@ class LengthConditionedVAE(nn.Module):
             # Per-dimension KL: (B, D_level)
             kl_per_dim = -0.5 * (1 + logvar_i - mu_i.pow(2) - logvar_i.exp())
 
-            # Apply free bits: clamp each dimension to minimum
-            if self.free_bits > 0:
-                kl_per_dim = torch.clamp(kl_per_dim, min=self.free_bits)
-
-            # Sum over dimensions, mean over batch
+            # Sum over dimensions, mean over batch (raw, no clamping)
             kl_i = kl_per_dim.sum(dim=-1).mean()
             kl_losses.append(kl_i)
 
-        return z, mu, logvar, kl_losses
+        # Total raw KL across all levels
+        total_raw_kl = sum(kl_losses)
+
+        # Apply target KL: max(target, actual)
+        # When actual < target: loss = target (constant, no gradient) → only recon gradient
+        # When actual > target: loss = actual (normal KL gradient pushes toward prior)
+        if self.target_kl > 0:
+            kl_for_loss = torch.max(torch.tensor(self.target_kl, device=mu.device), total_raw_kl)
+        else:
+            kl_for_loss = total_raw_kl
+
+        return z, mu, logvar, kl_for_loss, total_raw_kl, kl_losses
 
     def decode(self, z, length, padding_mask=None, gesture_type=None, lengths=None,
                audio_features=None):
@@ -582,35 +698,40 @@ class LengthConditionedVAE(nn.Module):
 
         Returns:
             recon: (B, T, in_channel) - reconstructed motion
-            kl_loss: total KL divergence
+            kl_loss: target-KL-adjusted KL divergence (for loss computation)
+            raw_kl: raw KL divergence (for logging)
         """
         B, T, _ = x.shape
 
+        # Condition dropout: drop audio + gesture_type to force reliance on z
+        if self.training and self.condition_dropout_prob > 0:
+            if torch.rand(1).item() < self.condition_dropout_prob:
+                audio_features = None
+                gesture_type = None
+
         # Encode
-        z, mu, logvar, kl_losses = self.encode(x, padding_mask, gesture_type=gesture_type,
-                                               audio_features=audio_features)
+        z, mu, logvar, kl_loss, raw_kl, kl_per_level = self.encode(
+            x, padding_mask, gesture_type=gesture_type, audio_features=audio_features)
 
         if return_intermediate:
-            return self._forward_with_intermediate(z, T, kl_losses, x, padding_mask,
+            return self._forward_with_intermediate(z, T, kl_loss, raw_kl, x, padding_mask,
                                                    compute_geometry, gesture_type=gesture_type,
-                                                   lengths=lengths, audio_features=audio_features)
+                                                   lengths=lengths, audio_features=audio_features,
+                                                   kl_per_level=kl_per_level)
 
         # Decode to same length as input
         recon = self.decode(z, T, padding_mask, gesture_type=gesture_type,
                            lengths=lengths, audio_features=audio_features)
 
-        # Total KL loss
-        total_kl = sum(kl_losses)
-
         if compute_geometry and self.use_smplx:
             vertices, joints = self.smplx_layer(recon)
-            return recon, total_kl, vertices, joints
+            return recon, kl_loss, raw_kl, vertices, joints
 
-        return recon, total_kl
+        return recon, kl_loss, raw_kl
 
-    def _forward_with_intermediate(self, z, length, kl_losses, x, padding_mask,
+    def _forward_with_intermediate(self, z, length, kl_loss, raw_kl, x, padding_mask,
                                    compute_geometry, gesture_type=None, lengths=None,
-                                   audio_features=None):
+                                   audio_features=None, kl_per_level=None):
         """Forward with intermediate outputs for progressive training."""
         intermediate_outputs = []
         level_dim = self.latent_dim // self.n_level
@@ -629,13 +750,11 @@ class LengthConditionedVAE(nn.Module):
                                        audio_features=audio_features)
             intermediate_outputs.append(level_output)
 
-        total_kl = sum(kl_losses)
-
         if compute_geometry and self.use_smplx:
             vertices, joints = self.smplx_layer(intermediate_outputs[-1])
-            return intermediate_outputs, total_kl, vertices, joints
+            return intermediate_outputs, kl_loss, raw_kl, vertices, joints, kl_per_level
 
-        return intermediate_outputs, total_kl
+        return intermediate_outputs, kl_loss, raw_kl, kl_per_level
 
     def sample(self, batch_size, length, device='cuda', temperature=1.0,
                gesture_type=None, audio_features=None):
@@ -676,8 +795,8 @@ class LengthConditionedVAE(nn.Module):
         if length is None:
             length = (x1.size(1) + x2.size(1)) // 2
 
-        z1, _, _, _ = self.encode(x1)
-        z2, _, _, _ = self.encode(x2)
+        z1, _, _, _, _ = self.encode(x1)
+        z2, _, _, _, _ = self.encode(x2)
 
         alphas = torch.linspace(0, 1, num_steps, device=z1.device)
         interpolated = []
@@ -703,8 +822,8 @@ class LengthConditionedVAE(nn.Module):
         num_levels = min(num_levels, self.n_level)
 
         B, T, _ = x.shape
-        z, mu, logvar, kl_losses = self.encode(x, padding_mask, gesture_type=gesture_type,
-                                               audio_features=audio_features)
+        z, mu, logvar, kl_loss, raw_kl = self.encode(x, padding_mask, gesture_type=gesture_type,
+                                                      audio_features=audio_features)
 
         level_dim = self.latent_dim // self.n_level
         end_idx = num_levels * level_dim
@@ -717,9 +836,8 @@ class LengthConditionedVAE(nn.Module):
 
         recon = self.decode(z_partial, T, padding_mask, gesture_type=gesture_type,
                            lengths=lengths, audio_features=audio_features)
-        total_kl = sum(kl_losses[:num_levels])
 
-        return recon, total_kl
+        return recon, kl_loss
 
 
 # Aliases for backward compatibility

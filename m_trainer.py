@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 
+import csv
+import os
+
 from m_util import conf_parser, model_object_parser, get_model_type, get_path, load_part
 from consts import VAE
 from m_train_vae import train as train_vae
@@ -84,7 +87,8 @@ def get_scheduler(lr, epoch, sched, optimizer, loader):
 def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, start_epoch=-1,
           end_epoch=-1, batch_size=-1, sched=None, device='cuda', size=256, lr=-1, amp=None,
           use_progressive=False, level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
-          patience=-1, kl_anneal_epochs=100, max_kl_weight=0.05, val_loader=None):
+          patience=-1, kl_anneal_epochs=100, max_kl_weight=0.05, val_loader=None,
+          vel_weight=1.0):
 
     model_type = get_model_type(folder_name)
     _, train_params = conf_parser(dataset_name, n_run, folder_name)
@@ -159,13 +163,17 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
         if val_loader is not None:
             print(f"Validation loader provided ({len(val_loader)} batches)")
 
+        # ===== CSV loss log setup =====
+        loss_log_path = os.path.join(folder_path, 'loss_log.csv')
+        loss_log_header_written = False
+
         for i in range(start_epoch, end_epoch):
             sample_iter += 1
             do_sample = sample_period > 0 and sample_iter % sample_period ==0
 
             if use_progressive:
                 # Progressive training with level-specific losses
-                epoch_loss = train_progressive(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
+                epoch_metrics = train_progressive(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
                                 use_smplx_loss=use_smplx_loss,
                                 pose_loss_weight=1.0,
                                 vertex_loss_weight=5.0,
@@ -174,7 +182,9 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                                 level_2_weight=level_2_weight,
                                 level_3_weight=level_3_weight,
                                 kl_anneal_epochs=kl_anneal_epochs,
-                                max_kl_weight=max_kl_weight)
+                                max_kl_weight=max_kl_weight,
+                                vel_weight=vel_weight)
+                epoch_loss = epoch_metrics['total']
             else:
                 # Standard training with final output only
                 epoch_loss = train_vae(folder_name, i, loader, model, writer, do_sample, sampler, optimizer, scheduler, device, dataset_name, n_run,
@@ -184,6 +194,7 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                            joint_loss_weight=3.0,
                            kl_anneal_epochs=kl_anneal_epochs,
                            max_kl_weight=max_kl_weight)
+                epoch_metrics = {'total': epoch_loss}
 
             # Early stopping check (only after KL annealing is complete)
             kl_annealing_done = (i + 1) >= kl_anneal_epochs
@@ -194,6 +205,24 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                 val_loss = validate_epoch(model, val_loader, device)
                 writer.add_scalar('Loss/val_recon', val_loss, i)
                 print(f"  Epoch {i+1}: train_loss={epoch_loss:.6f}, val_loss={val_loss:.6f}")
+
+            # ===== Write CSV loss log =====
+            epoch_metrics['epoch'] = i + 1
+            epoch_metrics['val_loss'] = val_loss if val_loss is not None else ''
+            if not loss_log_header_written:
+                # First epoch: overwrite file with header
+                # Put epoch first, then sorted keys for consistent column order
+                all_keys = ['epoch'] + sorted(k for k in epoch_metrics if k != 'epoch')
+                with open(loss_log_path, 'w', newline='') as f:
+                    writer_csv = csv.DictWriter(f, fieldnames=all_keys)
+                    writer_csv.writeheader()
+                    writer_csv.writerow(epoch_metrics)
+                loss_log_header_written = True
+                loss_log_keys = all_keys
+            else:
+                with open(loss_log_path, 'a', newline='') as f:
+                    writer_csv = csv.DictWriter(f, fieldnames=loss_log_keys)
+                    writer_csv.writerow(epoch_metrics)
 
             if kl_annealing_done:
                 # Use val loss for early stopping if available, otherwise train loss

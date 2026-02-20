@@ -17,9 +17,10 @@ def vae_sampler(folder_name, model, data, dataset_name, run_num, epoch, batch_si
     path = get_runtime_sampler_path(folder_name, dataset_name, run_num, epoch)
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
+    model.eval()
     with torch.no_grad():
-        out, _ = model(data, padding_mask=padding_mask, gesture_type=gesture_type,
-                       lengths=lengths, audio_features=audio_features)
+        out, _, _ = model(data, padding_mask=padding_mask, gesture_type=gesture_type,
+                         lengths=lengths, audio_features=audio_features)
 
     if 'beat2' in dataset_name.lower() or 'pose' in dataset_name.lower():
         # For pose data, save as numpy arrays instead of images
@@ -61,6 +62,7 @@ def vae_sampler(folder_name, model, data, dataset_name, run_num, epoch, batch_si
             nrow=batch_size,
             normalize=True,
         )
+    model.train()
 
 
 def runtime_vae_sampler(model, imgs, dataset_name, run_num, epoch, batch_size):

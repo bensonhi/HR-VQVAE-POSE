@@ -57,7 +57,21 @@ def model_option_parser(model_type, conf_path):
         if 'audio_dim' in model:
             options['audio_dim'] = model.getint('audio_dim')
 
-        # Free bits for KL floor
+        # Target KL for KL thresholding (replaces free bits)
+        if 'target_kl' in model:
+            options['target_kl'] = model.getfloat('target_kl')
+
+        # Number of decoder memory tokens
+        if 'num_memory_tokens' in model:
+            options['num_memory_tokens'] = model.getint('num_memory_tokens')
+
+        # Condition dropout and memory token dropout
+        if 'condition_dropout_prob' in model:
+            options['condition_dropout_prob'] = model.getfloat('condition_dropout_prob')
+        if 'memory_dropout_prob' in model:
+            options['memory_dropout_prob'] = model.getfloat('memory_dropout_prob')
+
+        # Free bits for KL floor (legacy, kept for backward compatibility)
         if 'free_bits' in model:
             options['free_bits'] = model.getfloat('free_bits')
 

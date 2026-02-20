@@ -23,6 +23,7 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
     pose_mse_sum = 0
     vertex_mse_sum = 0
     joint_mse_sum = 0
+    kl_raw_sum = 0
     total_loss_sum = 0
     mse_n = 0
 
@@ -77,20 +78,20 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
             if model_has_smplx:
                 result = model(poses, padding_mask=padding_mask, gesture_type=gesture_type,
                               lengths=lengths, audio_features=audio, compute_geometry=True)
-                reconstructed_poses, latent_loss, pred_vertices, pred_joints = result
+                reconstructed_poses, latent_loss, raw_kl, pred_vertices, pred_joints = result
             else:
-                reconstructed_poses, latent_loss = model(poses, padding_mask=padding_mask,
-                                                         gesture_type=gesture_type,
-                                                         lengths=lengths, audio_features=audio)
+                reconstructed_poses, latent_loss, raw_kl = model(poses, padding_mask=padding_mask,
+                                                                  gesture_type=gesture_type,
+                                                                  lengths=lengths, audio_features=audio)
                 pred_vertices, pred_joints = None, None
         else:
             result = model(poses, padding_mask=padding_mask, gesture_type=gesture_type,
                           lengths=lengths, audio_features=audio)
-            if len(result) == 4:
-                reconstructed_poses, latent_loss, pred_vertices, pred_joints = result
+            if len(result) == 5:
+                reconstructed_poses, latent_loss, raw_kl, pred_vertices, pred_joints = result
                 pred_vertices, pred_joints = None, None
             else:
-                reconstructed_poses, latent_loss = result
+                reconstructed_poses, latent_loss, raw_kl = result
                 pred_vertices, pred_joints = None, None
 
         # Compute masked reconstruction loss
@@ -101,6 +102,13 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
             pose_recon_loss = (((reconstructed_poses - poses) ** 2) * valid_mask_expanded).sum() / (num_valid * poses.shape[-1])
         else:
             pose_recon_loss = F.mse_loss(reconstructed_poses, poses)
+
+        # Compute GT joints/vertices from GT poses if not provided by dataloader
+        if use_smplx_loss and gt_joints is None:
+            actual_model = model.module if hasattr(model, 'module') else model
+            if hasattr(actual_model, 'smplx_layer') and actual_model.smplx_layer is not None:
+                with torch.no_grad():
+                    gt_vertices, gt_joints = actual_model.smplx_layer(poses)
 
         # Compute geometry losses if available
         vertex_recon_loss = torch.tensor(0.0, device=device)
@@ -134,6 +142,7 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
         pose_mse_sum += pose_recon_loss.item() * batch_size
         vertex_mse_sum += vertex_recon_loss.item() * batch_size
         joint_mse_sum += joint_recon_loss.item() * batch_size
+        kl_raw_sum += raw_kl.item() * batch_size
         total_loss_sum += total_loss.item() * batch_size
         mse_n += batch_size
 
@@ -165,6 +174,7 @@ def train(folder_name, epoch_num, loader, model, writer, do_sample, sampler, opt
     writer.add_scalar('Loss/train', pose_mse_sum / mse_n, epoch_num)
     writer.add_scalar('Loss/pose_mse', pose_mse_sum / mse_n, epoch_num)
     writer.add_scalar('Loss/total', total_loss_sum / mse_n, epoch_num)
+    writer.add_scalar('Loss/kl_raw', kl_raw_sum / mse_n, epoch_num)
     writer.add_scalar('Loss/kl_weight', latent_loss_weight, epoch_num)
 
     if use_smplx_loss:

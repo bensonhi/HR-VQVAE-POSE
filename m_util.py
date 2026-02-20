@@ -36,8 +36,12 @@ def create_model_object(model_type, options):
             dropout=options.get('dropout', 0.1),
             max_len=options.get('max_len', 1024),
             audio_dim=options.get('audio_dim', None),
+            target_kl=options.get('target_kl', 50.0),
+            num_memory_tokens=options.get('num_memory_tokens', 4),
             use_smplx=options.get('use_smplx', False),
-            smplx_model_path=options.get('smplx_model_path', 'models_smplx_v1_1/models')
+            smplx_model_path=options.get('smplx_model_path', 'models_smplx_v1_1/models'),
+            condition_dropout_prob=options.get('condition_dropout_prob', 0.0),
+            memory_dropout_prob=options.get('memory_dropout_prob', 0.0),
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")

@@ -229,6 +229,8 @@ class BEAT2PoseDataset(Dataset):
                     'audio': audio.astype(np.float32),
                     'valid_regions': valid_regions,
                     'gesture_labels': gesture_labels,
+                    'audio_path': audio_path,
+                    'pose_path': file_path,
                 })
 
                 # Build sample index: weight each region by its length / avg_clip_length
@@ -277,6 +279,9 @@ class BEAT2PoseDataset(Dataset):
             'audio': torch.FloatTensor(audio),
             'gesture_type': gesture_type,
             'length': clip_length,
+            'clip_start': clip_start,
+            'audio_path': file_data['audio_path'],
+            'pose_path': file_data['pose_path'],
         }
 
 
@@ -317,6 +322,9 @@ def variable_length_collate_fn(batch):
         'gesture_type': gesture_types,
         'lengths': lengths,
         'padding_mask': padding_mask,
+        'clip_start': torch.tensor([item['clip_start'] for item in batch], dtype=torch.long),
+        'audio_path': [item['audio_path'] for item in batch],
+        'pose_path': [item['pose_path'] for item in batch],
     }
 
     return data_dict, torch.zeros(batch_size)  # dummy label

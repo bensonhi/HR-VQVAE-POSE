@@ -21,8 +21,9 @@ sampler = vae_sampler
 patience = 30  # Default: stop if no improvement for 30 epochs
 
 # ===== VAE KL Annealing Configuration =====
-kl_anneal_epochs = 100
-max_kl_weight = 0.0001
+kl_anneal_epochs = 0
+max_kl_weight = 1e-5
+vel_weight = 1.0  # Velocity (frame-difference) loss weight
 
 # ===== Progressive Training Configuration =====
 use_progressive = True
@@ -36,7 +37,7 @@ from m_beat_dataset import get_beat_variable_length_loader
 train_loader = get_beat_variable_length_loader(
     data_path='BEAT2',
     language='english',
-    batch_size=32,
+    batch_size=16,  # reduced from 32: 3 decoder graphs w/o detach need more memory
     min_length=5,
     max_length=150,
     shuffle=True,
@@ -47,7 +48,7 @@ train_loader = get_beat_variable_length_loader(
 val_loader = get_beat_variable_length_loader(
     data_path='BEAT2',
     language='english',
-    batch_size=32,
+    batch_size=16,
     min_length=5,
     max_length=150,
     shuffle=False,
@@ -78,4 +79,5 @@ train(
        patience=patience,
        kl_anneal_epochs=kl_anneal_epochs,
        max_kl_weight=max_kl_weight,
-       val_loader=val_loader)
+       val_loader=val_loader,
+       vel_weight=vel_weight)
