@@ -76,6 +76,35 @@ def _velocity_loss(pred, target, padding_mask=None):
         return F.mse_loss(vel_pred, vel_gt)
 
 
+def _continuation_velocity_loss(recon, gt, anchor_frames, anchor_pool, n_frames=30):
+    """Velocity loss near the anchor→generated boundary with decaying weight.
+
+    Frame 0: boundary velocity (recon[0] - anchor[-1]) vs (gt[0] - anchor_pool[-1])
+    Frame i>0: intra-sequence velocity (recon[i] - recon[i-1]) vs (gt[i] - gt[i-1])
+    Weight decays linearly: w_i = 1 - i/n_frames (strongest at boundary).
+
+    This gives extra velocity penalty near the start of each generated chunk,
+    on top of the uniform velocity loss that covers all frames equally.
+    """
+    T = recon.shape[1]
+    n = min(n_frames, T)
+    total_loss = 0.0
+    weight_sum = 0.0
+
+    for i in range(n):
+        w = 1.0 - i / n_frames  # linear decay
+        if i == 0:
+            pred_vel = recon[:, 0] - anchor_frames[:, -1]
+            gt_vel = gt[:, 0] - anchor_pool[:, -1]
+        else:
+            pred_vel = recon[:, i] - recon[:, i - 1]
+            gt_vel = gt[:, i] - gt[:, i - 1]
+        total_loss = total_loss + w * F.mse_loss(pred_vel, gt_vel)
+        weight_sum += w
+
+    return total_loss / weight_sum
+
+
 def compute_level_local_loss(level_output, gt_poses, pred_vertices, pred_joints,
                              gt_vertices, gt_joints, part_name, criterion, device,
                              padding_mask=None, vel_weight=1.0):
@@ -228,7 +257,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
                      use_smplx_loss=False, pose_loss_weight=1.0, vertex_loss_weight=1.0, joint_loss_weight=1.0,
                      level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
                      level_loss_configs=None, kl_anneal_epochs=100, max_kl_weight=0.05,
-                     vel_weight=1.0):
+                     vel_weight=1.0, cont_vel_weight=1.0):
     """
     Progressive training with stop gradients between levels and global losses.
     Supports variable-length batches with audio and gesture type conditioning.
@@ -272,6 +301,10 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             if gesture_type is not None:
                 gesture_type = gesture_type.to(device)
 
+            speaker_id = data.get('speaker_id', None)
+            if speaker_id is not None:
+                speaker_id = speaker_id.to(device)
+
             lengths = data.get('lengths', None)
             if lengths is not None:
                 lengths = lengths.to(device)
@@ -284,6 +317,10 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             if audio is not None:
                 audio = audio.to(device)
 
+            anchor_pool = data.get('anchor_pool', None)
+            if anchor_pool is not None:
+                anchor_pool = anchor_pool.to(device)
+
             gt_joints = data.get('gt_joints', None)
             gt_vertices = data.get('gt_vertices', None)
             if gt_joints is not None:
@@ -293,16 +330,19 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
         else:
             poses = data.to(device)
             gesture_type = None
+            speaker_id = None
             lengths = None
             padding_mask = None
             audio = None
+            anchor_pool = None
             gt_joints = None
             gt_vertices = None
 
         # ==================== Forward Pass ====================
         result = model(poses, padding_mask=padding_mask, gesture_type=gesture_type,
                       lengths=lengths, audio_features=audio,
-                      compute_geometry=use_smplx_loss, return_intermediate=True)
+                      compute_geometry=use_smplx_loss, return_intermediate=True,
+                      anchor_pool=anchor_pool, speaker_id=speaker_id)
 
         if use_smplx_loss:
             intermediate_outputs, latent_loss, raw_kl, pred_vertices, pred_joints, kl_per_level = result
@@ -374,6 +414,16 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             vel_weight=vel_weight
         )
 
+        # ==================== Continuation Velocity Loss ====================
+        # Penalise discontinuity at anchor → first generated frame boundary
+        actual_model = model.module if hasattr(model, 'module') else model
+        used_anchor_frames = actual_model.get_last_anchor_frames()
+        cont_vel_loss = torch.tensor(0.0, device=device)
+        if used_anchor_frames is not None and anchor_pool is not None and cont_vel_weight > 0:
+            cont_vel_loss = _continuation_velocity_loss(
+                level_3_output, poses, used_anchor_frames, anchor_pool)
+        global_dict['cont_vel'] = cont_vel_loss.item()
+
         # ==================== Combine All Losses ====================
         latent_loss = latent_loss.mean()
 
@@ -382,6 +432,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             level_2_weight * level_2_local_loss +
             level_3_weight * level_3_local_loss +
             global_loss +
+            cont_vel_weight * cont_vel_loss +
             latent_loss_weight * latent_loss
         )
 
@@ -430,6 +481,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
         avg_grad_norm = grad_norm_sum / mse_n
         avg_kl_per_dim = avg_kl_raw / latent_dim
         avg_global_vel = global_components.get('global_vel', 0.0) / max(mse_n, 1)
+        avg_cont_vel = global_components.get('cont_vel', 0.0) / max(mse_n, 1)
 
         desc = (
             f'epoch: {epoch_num + 1}; '
@@ -438,6 +490,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             f'L3: {avg_l3:.4f}; '
             f'G: {avg_global:.4f}; '
             f'Vel: {avg_global_vel:.4f}; '
+            f'CVel: {avg_cont_vel:.4f}; '
             f'KL: {avg_kl_raw:.1f}({avg_kl_per_dim:.2f}/d); '
             f'KL[{kl_level_sums[0]/max(mse_n,1):.0f},{kl_level_sums[1]/max(mse_n,1):.0f},{kl_level_sums[2]/max(mse_n,1):.0f}]; '
             f'|g|: {avg_grad_norm:.2f}; '

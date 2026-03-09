@@ -104,6 +104,7 @@ class BEAT2PoseDataset(Dataset):
                  use_axis_angle: bool = True,
                  audio_dir: Optional[str] = None,
                  split: Optional[str] = None,
+                 anchor_max_frames: int = 30,
                  # Legacy parameters (ignored, kept for backward compat)
                  sequence_length: int = 120,
                  stride: int = 30,
@@ -131,6 +132,7 @@ class BEAT2PoseDataset(Dataset):
         self.pose_dims = pose_dims
         self.use_axis_angle = use_axis_angle
         self.split = split
+        self.anchor_max_frames = anchor_max_frames
 
         # Determine the correct language folder
         lang_folders = {
@@ -223,6 +225,9 @@ class BEAT2PoseDataset(Dataset):
                 if not valid_regions:
                     continue
 
+                # Extract speaker ID from filename (e.g. "1_wayne_0_1_1.npz" → 1)
+                speaker_id = int(basename.split('_')[0])
+
                 file_idx = len(self.file_data)
                 self.file_data.append({
                     'poses': poses.astype(np.float32),
@@ -231,6 +236,7 @@ class BEAT2PoseDataset(Dataset):
                     'gesture_labels': gesture_labels,
                     'audio_path': audio_path,
                     'pose_path': file_path,
+                    'speaker_id': speaker_id,
                 })
 
                 # Build sample index: weight each region by its length / avg_clip_length
@@ -274,12 +280,23 @@ class BEAT2PoseDataset(Dataset):
         beat_count = np.sum(gesture_labels == 0)
         gesture_type = 1 if semantic_count >= beat_count else 0
 
+        # Extract anchor pool: up to anchor_max_frames preceding the clip
+        K = self.anchor_max_frames
+        anchor_start = max(0, clip_start - K)
+        anchor_pool = file_data['poses'][anchor_start:clip_start]  # (≤K, 165)
+        # Left-zero-pad if clip is near the start of the recording
+        if anchor_pool.shape[0] < K:
+            pad = np.zeros((K - anchor_pool.shape[0], self.pose_dims), dtype=np.float32)
+            anchor_pool = np.concatenate([pad, anchor_pool], axis=0)  # (K, 165)
+
         return {
             'poses': torch.FloatTensor(poses),
             'audio': torch.FloatTensor(audio),
             'gesture_type': gesture_type,
+            'speaker_id': file_data['speaker_id'],
             'length': clip_length,
             'clip_start': clip_start,
+            'anchor_pool': anchor_pool,  # (K, 165) real preceding frames, zero-padded at start
             'audio_path': file_data['audio_path'],
             'pose_path': file_data['pose_path'],
         }
@@ -316,13 +333,22 @@ def variable_length_collate_fn(batch):
         padded_audio[i, :l] = item['audio']
         padding_mask[i, :l] = False  # valid positions
 
+    # Stack anchor pools — all same shape (K, 165) due to zero-padding in __getitem__
+    anchor_pool = torch.stack(
+        [torch.FloatTensor(item['anchor_pool']) for item in batch], dim=0
+    )  # (B, K, 165)
+
+    speaker_ids = torch.tensor([item['speaker_id'] for item in batch], dtype=torch.long)
+
     data_dict = {
         'poses': padded_poses,
         'audio': padded_audio,
         'gesture_type': gesture_types,
+        'speaker_id': speaker_ids,
         'lengths': lengths,
         'padding_mask': padding_mask,
         'clip_start': torch.tensor([item['clip_start'] for item in batch], dtype=torch.long),
+        'anchor_pool': anchor_pool,
         'audio_path': [item['audio_path'] for item in batch],
         'pose_path': [item['pose_path'] for item in batch],
     }
@@ -345,6 +371,7 @@ def get_beat_variable_length_loader(
     use_axis_angle: bool = True,
     audio_dir: Optional[str] = None,
     split: Optional[str] = None,
+    anchor_max_frames: int = 30,
 ):
     """
     Create a DataLoader for BEAT2 with variable-length clips, gesture type, and audio.
@@ -369,6 +396,7 @@ def get_beat_variable_length_loader(
         use_axis_angle=use_axis_angle,
         audio_dir=audio_dir,
         split=split,
+        anchor_max_frames=anchor_max_frames,
     )
 
     return DataLoader(

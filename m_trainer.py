@@ -39,15 +39,19 @@ def validate_epoch(model, val_loader, device):
                 audio = data.get('audio', None)
                 if audio is not None:
                     audio = audio.to(device)
+                speaker_id = data.get('speaker_id', None)
+                if speaker_id is not None:
+                    speaker_id = speaker_id.to(device)
             else:
                 poses = data.to(device)
                 padding_mask = None
                 gesture_type = None
                 lengths = None
                 audio = None
+                speaker_id = None
 
             result = model(poses, padding_mask=padding_mask, gesture_type=gesture_type,
-                          lengths=lengths, audio_features=audio)
+                          lengths=lengths, audio_features=audio, speaker_id=speaker_id)
             # Handle both (recon, kl) and (intermediates, kl) return formats
             if isinstance(result[0], list):
                 reconstructed_poses = result[0][-1]  # final level output
@@ -88,28 +92,28 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
           end_epoch=-1, batch_size=-1, sched=None, device='cuda', size=256, lr=-1, amp=None,
           use_progressive=False, level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
           patience=-1, kl_anneal_epochs=100, max_kl_weight=0.05, val_loader=None,
-          vel_weight=1.0):
+          vel_weight=1.0, cont_vel_weight=1.0):
 
     model_type = get_model_type(folder_name)
     _, train_params = conf_parser(dataset_name, n_run, folder_name)
     model = model_object_parser(dataset_name, n_run, folder_name)
     model = model.to(device)
     args = {}
-    if start_epoch > 1:
-        try:
-            ckpt = load_part(model, start_epoch - 1, device)
-        except RuntimeError as e:
-            print('not find checkpoint {}'.format(start_epoch - 1))
+    if start_epoch > 0:
+        ckpt_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=start_epoch - 1)
+        if os.path.exists(ckpt_path):
+            print(f"Loading checkpoint: {ckpt_path}")
+            state_dict = torch.load(ckpt_path, map_location=device)
+            # Strip 'module.' prefix if present (saved from DataParallel)
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                new_key = k[len('module.'):] if k.startswith('module.') else k
+                new_state_dict[new_key] = v
+            model.load_state_dict(new_state_dict)
+            print(f"Loaded checkpoint from epoch {start_epoch - 1}")
+        else:
+            print(f"Checkpoint not found: {ckpt_path}")
             return 0
-
-        args = ckpt['args']
-        model = ckpt['model']
-        if 'lr' in args:
-            lr = args['lr']
-        if 'batch' in args:
-            batch_size = args['batch']
-        if 'amp' in args:
-            amp = args['amp']
 
     if lr < 0:
         lr = train_params['lr']
@@ -137,9 +141,18 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
     if model_type == VAE:
         scheduler = get_scheduler(lr, end_epoch - start_epoch, sched, optimizer, loader)
 
-        # Add cosine annealing learning rate scheduler for better convergence
-        from torch.optim.lr_scheduler import CosineAnnealingLR
-        cosine_scheduler = CosineAnnealingLR(optimizer, T_max=end_epoch-start_epoch, eta_min=1e-5)
+        # Warmup + cosine annealing LR schedule (always based on total epochs)
+        from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+        warmup_epochs = 20
+        warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs)
+        cosine_scheduler = CosineAnnealingLR(optimizer, T_max=max(1, end_epoch - warmup_epochs), eta_min=1e-5)
+        combined_scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs])
+
+        # Fast-forward LR scheduler if resuming
+        if start_epoch > 0:
+            for _ in range(start_epoch):
+                combined_scheduler.step()
+            print(f"LR scheduler fast-forwarded to epoch {start_epoch} (lr={optimizer.param_groups[0]['lr']:.6f})")
 
         # Check if model has SMPLX capability
         use_smplx_loss = False
@@ -166,6 +179,25 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
         # ===== CSV loss log setup =====
         loss_log_path = os.path.join(folder_path, 'loss_log.csv')
         loss_log_header_written = False
+        loss_log_keys = None
+
+        # When resuming, read existing CSV to restore early stopping state and append mode
+        if start_epoch > 0 and os.path.exists(loss_log_path):
+            with open(loss_log_path) as f:
+                existing_rows = list(csv.DictReader(f))
+            if existing_rows:
+                loss_log_keys = list(existing_rows[0].keys())
+                loss_log_header_written = True  # will append, not overwrite
+                # Restore best_loss from existing log for early stopping
+                for row in existing_rows:
+                    val = row.get('val_loss', '')
+                    if val and val != '':
+                        loss_val = float(val)
+                    else:
+                        loss_val = float(row.get('total', float('inf')))
+                    if loss_val < best_loss:
+                        best_loss = loss_val
+                print(f"Restored best_loss={best_loss:.6f} from existing log ({len(existing_rows)} epochs)")
 
         for i in range(start_epoch, end_epoch):
             sample_iter += 1
@@ -183,7 +215,8 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                                 level_3_weight=level_3_weight,
                                 kl_anneal_epochs=kl_anneal_epochs,
                                 max_kl_weight=max_kl_weight,
-                                vel_weight=vel_weight)
+                                vel_weight=vel_weight,
+                                cont_vel_weight=cont_vel_weight)
                 epoch_loss = epoch_metrics['total']
             else:
                 # Standard training with final output only
@@ -248,9 +281,8 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                 best_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint='best')
                 torch.save(model.state_dict(), best_path)
 
-            # Step the cosine annealing scheduler
-            if cosine_scheduler is not None:
-                cosine_scheduler.step()
+            # Step the LR scheduler (warmup → cosine)
+            combined_scheduler.step()
 
             # Check if should stop early (only possible after KL annealing)
             if early_stop_enabled and kl_annealing_done and epochs_without_improvement >= patience:

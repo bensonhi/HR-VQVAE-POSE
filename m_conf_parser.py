@@ -71,6 +71,16 @@ def model_option_parser(model_type, conf_path):
         if 'memory_dropout_prob' in model:
             options['memory_dropout_prob'] = model.getfloat('memory_dropout_prob')
 
+        # Anchor frame conditioning
+        if 'anchor_max_frames' in model:
+            options['anchor_max_frames'] = model.getint('anchor_max_frames')
+        if 'anchor_prob' in model:
+            options['anchor_prob'] = model.getfloat('anchor_prob')
+
+        # Speaker conditioning
+        if 'num_speakers' in model:
+            options['num_speakers'] = model.getint('num_speakers')
+
         # Free bits for KL floor (legacy, kept for backward compatibility)
         if 'free_bits' in model:
             options['free_bits'] = model.getfloat('free_bits')

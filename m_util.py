@@ -42,6 +42,9 @@ def create_model_object(model_type, options):
             smplx_model_path=options.get('smplx_model_path', 'models_smplx_v1_1/models'),
             condition_dropout_prob=options.get('condition_dropout_prob', 0.0),
             memory_dropout_prob=options.get('memory_dropout_prob', 0.0),
+            anchor_max_frames=options.get('anchor_max_frames', 30),
+            anchor_prob=options.get('anchor_prob', 0.5),
+            num_speakers=options.get('num_speakers', 0),
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
