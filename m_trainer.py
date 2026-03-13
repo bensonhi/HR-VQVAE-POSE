@@ -42,6 +42,12 @@ def validate_epoch(model, val_loader, device):
                 speaker_id = data.get('speaker_id', None)
                 if speaker_id is not None:
                     speaker_id = speaker_id.to(device)
+                anchor_pool = data.get('anchor_pool', None)
+                if anchor_pool is not None:
+                    anchor_pool = anchor_pool.to(device)
+                anchor_audio = data.get('anchor_audio', None)
+                if anchor_audio is not None:
+                    anchor_audio = anchor_audio.to(device)
             else:
                 poses = data.to(device)
                 padding_mask = None
@@ -49,9 +55,12 @@ def validate_epoch(model, val_loader, device):
                 lengths = None
                 audio = None
                 speaker_id = None
+                anchor_pool = None
+                anchor_audio = None
 
             result = model(poses, padding_mask=padding_mask, gesture_type=gesture_type,
-                          lengths=lengths, audio_features=audio, speaker_id=speaker_id)
+                          lengths=lengths, audio_features=audio, speaker_id=speaker_id,
+                          anchor_pool=anchor_pool, anchor_audio=anchor_audio)
             # Handle both (recon, kl) and (intermediates, kl) return formats
             if isinstance(result[0], list):
                 reconstructed_poses = result[0][-1]  # final level output
@@ -92,7 +101,8 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
           end_epoch=-1, batch_size=-1, sched=None, device='cuda', size=256, lr=-1, amp=None,
           use_progressive=False, level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
           patience=-1, kl_anneal_epochs=100, max_kl_weight=0.05, val_loader=None,
-          vel_weight=1.0, cont_vel_weight=1.0):
+          vel_weight=1.0, cont_vel_weight=50.0,
+          anchor_recon_weight=0.1):
 
     model_type = get_model_type(folder_name)
     _, train_params = conf_parser(dataset_name, n_run, folder_name)
@@ -216,7 +226,8 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                                 kl_anneal_epochs=kl_anneal_epochs,
                                 max_kl_weight=max_kl_weight,
                                 vel_weight=vel_weight,
-                                cont_vel_weight=cont_vel_weight)
+                                cont_vel_weight=cont_vel_weight,
+                                anchor_recon_weight=anchor_recon_weight)
                 epoch_loss = epoch_metrics['total']
             else:
                 # Standard training with final output only

@@ -284,10 +284,13 @@ class BEAT2PoseDataset(Dataset):
         K = self.anchor_max_frames
         anchor_start = max(0, clip_start - K)
         anchor_pool = file_data['poses'][anchor_start:clip_start]  # (≤K, 165)
+        anchor_audio = file_data['audio'][anchor_start:clip_start]  # (≤K, 768)
         # Left-zero-pad if clip is near the start of the recording
         if anchor_pool.shape[0] < K:
-            pad = np.zeros((K - anchor_pool.shape[0], self.pose_dims), dtype=np.float32)
-            anchor_pool = np.concatenate([pad, anchor_pool], axis=0)  # (K, 165)
+            pad_poses = np.zeros((K - anchor_pool.shape[0], self.pose_dims), dtype=np.float32)
+            anchor_pool = np.concatenate([pad_poses, anchor_pool], axis=0)  # (K, 165)
+            pad_audio = np.zeros((K - anchor_audio.shape[0], file_data['audio'].shape[-1]), dtype=np.float32)
+            anchor_audio = np.concatenate([pad_audio, anchor_audio], axis=0)  # (K, 768)
 
         return {
             'poses': torch.FloatTensor(poses),
@@ -297,6 +300,7 @@ class BEAT2PoseDataset(Dataset):
             'length': clip_length,
             'clip_start': clip_start,
             'anchor_pool': anchor_pool,  # (K, 165) real preceding frames, zero-padded at start
+            'anchor_audio': anchor_audio,  # (K, 768) audio for anchor frames, zero-padded at start
             'audio_path': file_data['audio_path'],
             'pose_path': file_data['pose_path'],
         }
@@ -337,6 +341,9 @@ def variable_length_collate_fn(batch):
     anchor_pool = torch.stack(
         [torch.FloatTensor(item['anchor_pool']) for item in batch], dim=0
     )  # (B, K, 165)
+    anchor_audio = torch.stack(
+        [torch.FloatTensor(item['anchor_audio']) for item in batch], dim=0
+    )  # (B, K, 768)
 
     speaker_ids = torch.tensor([item['speaker_id'] for item in batch], dtype=torch.long)
 
@@ -349,6 +356,7 @@ def variable_length_collate_fn(batch):
         'padding_mask': padding_mask,
         'clip_start': torch.tensor([item['clip_start'] for item in batch], dtype=torch.long),
         'anchor_pool': anchor_pool,
+        'anchor_audio': anchor_audio,
         'audio_path': [item['audio_path'] for item in batch],
         'pose_path': [item['pose_path'] for item in batch],
     }

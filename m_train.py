@@ -33,7 +33,8 @@ patience = 30  # Default: stop if no improvement for 30 epochs
 kl_anneal_epochs = 0
 max_kl_weight = 1e-5
 vel_weight = 3.0  # Velocity (frame-difference) loss weight
-cont_vel_weight = 3.0  # Continuation velocity loss weight (anchor→first frame)
+cont_vel_weight = 50.0  # Continuation velocity loss weight (anchor→first frame)
+anchor_recon_weight = 0.1  # Anchor reconstruction loss weight
 
 # ===== Progressive Training Configuration =====
 use_progressive = True
@@ -44,7 +45,7 @@ level_2_weight = 1.0  # Body pose loss weight
 level_3_weight = 1.0  # Hands pose loss weight
 
 from m_beat_dataset import get_beat_variable_length_loader
-anchor_max_frames = 30
+anchor_max_frames = 90
 
 train_loader = get_beat_variable_length_loader(
     data_path='BEAT2',
@@ -110,4 +111,5 @@ train(
        max_kl_weight=max_kl_weight,
        val_loader=val_loader,
        vel_weight=vel_weight,
-       cont_vel_weight=cont_vel_weight)
+       cont_vel_weight=cont_vel_weight,
+       anchor_recon_weight=anchor_recon_weight)

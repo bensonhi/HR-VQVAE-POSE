@@ -471,7 +471,8 @@ class LengthConditionedDecoder(nn.Module):
         self.output_proj = nn.Linear(d_model, out_channel)
 
     def forward(self, z, target_length, padding_mask=None, gesture_type=None,
-                lengths=None, audio_features=None, anchor_frames=None, speaker_id=None):
+                lengths=None, audio_features=None, anchor_frames=None, speaker_id=None,
+                anchor_audio=None):
         """
         Args:
             z: (B, latent_dim) - global latent
@@ -481,6 +482,7 @@ class LengthConditionedDecoder(nn.Module):
             lengths: (B,) - per-sample true lengths, optional (overrides uniform target_length)
             audio_features: (B, T, audio_dim) - audio features, optional
             anchor_frames: (B, K, out_channel) - preceding motion frames, optional.
+            anchor_audio: (B, K, audio_dim) - audio for anchor frames, optional.
                            Prepended to the query sequence so the model attends to them
                            in self-attention, enabling smooth continuation.
             speaker_id: (B,) - speaker indices, optional
@@ -513,9 +515,17 @@ class LengthConditionedDecoder(nn.Module):
             z_memory = z_memory * mask / keep_prob
 
         # Build cross-attention memory: [z_tokens, audio_tokens] or [z_tokens]
+        # When anchor_audio is provided, prepend it to audio so positions align with queries:
+        #   query positions: [anchor(0..K-1), gen(K..K+T-1)]
+        #   audio positions: [anchor_audio(0..K-1), gen_audio(K..K+T-1)]
         if audio_features is not None and self.audio_proj is not None:
-            audio_memory = self.audio_pos_encoder(self.audio_proj(audio_features))
-            memory = torch.cat([z_memory, audio_memory], dim=1)  # (B, M+T, D)
+            if anchor_audio is not None and anchor_frames is not None:
+                K_audio = anchor_audio.shape[1]
+                full_audio = torch.cat([anchor_audio, audio_features], dim=1)  # (B, K+T, audio_dim)
+                audio_memory = self.audio_pos_encoder(self.audio_proj(full_audio))
+            else:
+                audio_memory = self.audio_pos_encoder(self.audio_proj(audio_features))
+            memory = torch.cat([z_memory, audio_memory], dim=1)  # (B, M+K+T, D) or (B, M+T, D)
         else:
             memory = z_memory  # (B, M, D) — sampling mode (ACTOR-style)
 
@@ -526,7 +536,9 @@ class LengthConditionedDecoder(nn.Module):
         if anchor_frames is not None and anchor_frames.shape[1] > 0:
             K = anchor_frames.shape[1]
             anchor_tokens = self.anchor_proj(anchor_frames)  # (B, K, d_model)
-            gen_queries = self.query_embed.expand(B, target_length, -1)
+            # Seed gen queries from last anchor token (smooth boundary)
+            last_anchor = anchor_tokens[:, -1:, :]  # (B, 1, d_model)
+            gen_queries = self.query_embed.expand(B, target_length, -1) + last_anchor
             full_seq = torch.cat([anchor_tokens, gen_queries], dim=1)  # (B, K+T, d_model)
             x = self.pos_encoder(full_seq)
             # Extend padding mask: anchor positions are always valid (not padded)
@@ -544,10 +556,16 @@ class LengthConditionedDecoder(nn.Module):
             x = layer(x, z_embed=z_embed, memory=memory, tgt_key_padding_mask=full_padding_mask)
 
         x = self.norm(x)
-        # Discard anchor positions — only return the generated frames
+        # Split anchor reconstruction and generated frames
         if K > 0:
-            x = x[:, K:]
-        return self.output_proj(x)
+            anchor_recon = self.output_proj(x[:, :K])
+            gen_output = self.output_proj(x[:, K:])
+            # Store anchor recon for loss computation
+            self._last_anchor_recon = anchor_recon
+            return gen_output
+        else:
+            self._last_anchor_recon = None
+            return self.output_proj(x)
 
 
 class VAELevel(nn.Module):
@@ -716,7 +734,8 @@ class LengthConditionedVAE(nn.Module):
         return z, mu, logvar, kl_for_loss, total_raw_kl, kl_losses
 
     def decode(self, z, length, padding_mask=None, gesture_type=None, lengths=None,
-               audio_features=None, anchor_frames=None, speaker_id=None):
+               audio_features=None, anchor_frames=None, speaker_id=None,
+               anchor_audio=None):
         """
         Decode global latent to motion sequence of specified length.
 
@@ -729,17 +748,19 @@ class LengthConditionedVAE(nn.Module):
             audio_features: (B, T, audio_dim) - audio features, optional
             anchor_frames: (B, K, in_channel) - preceding motion frames for continuation, optional
             speaker_id: (B,) - speaker indices, optional
+            anchor_audio: (B, K, audio_dim) - audio for anchor frames, optional
 
         Returns:
             (B, length, out_channel) - generated motion
         """
         return self.decoder(z, length, padding_mask, gesture_type=gesture_type,
                            lengths=lengths, audio_features=audio_features,
-                           anchor_frames=anchor_frames, speaker_id=speaker_id)
+                           anchor_frames=anchor_frames, speaker_id=speaker_id,
+                           anchor_audio=anchor_audio)
 
     def forward(self, x, padding_mask=None, gesture_type=None, lengths=None,
                 audio_features=None, compute_geometry=False, return_intermediate=False,
-                anchor_pool=None, speaker_id=None):
+                anchor_pool=None, speaker_id=None, anchor_audio=None):
         """
         Forward pass: encode input, decode to same length.
 
@@ -755,6 +776,7 @@ class LengthConditionedVAE(nn.Module):
                          During training, K is sampled via two-stage method (anchor_prob).
                          During inference, pass directly as anchor_frames.
             speaker_id: (B,) - speaker indices, optional (NOT dropped during condition dropout)
+            anchor_audio: (B, K_max, audio_dim) - audio for anchor frames, optional
 
         Returns:
             recon: (B, T, in_channel) - reconstructed motion
@@ -768,21 +790,36 @@ class LengthConditionedVAE(nn.Module):
         if self.training and self.condition_dropout_prob > 0:
             if torch.rand(1).item() < self.condition_dropout_prob:
                 audio_features = None
+                anchor_audio = None
                 gesture_type = None
 
-        # Two-stage anchor sampling:
-        # Training: with prob anchor_prob use K∈[1, K_max], else K=0 (unconditional)
+        # Anchor sampling strategy (training only):
+        #   60% → K=K_max (matches inference setting)
+        #   20% → K=0 (unconditional, no anchor)
+        #   20% → K∈[1, K_max-1] (robustness to shorter anchors)
         # Inference: pass anchor_pool directly as anchor_frames (caller controls K)
         anchor_frames = None
+        sampled_anchor_audio = None
         if anchor_pool is not None and self.anchor_max_frames > 0:
             if self.training:
-                if torch.rand(1).item() < self.anchor_prob:
-                    K = torch.randint(1, self.anchor_max_frames + 1, (1,)).item()
-                    anchor_frames = anchor_pool[:, -K:, :]  # last K frames
-                # else anchor_frames stays None (unconditional)
+                r = torch.rand(1).item()
+                if r < 0.6:
+                    # 60%: full anchor (matches inference)
+                    anchor_frames = anchor_pool  # (B, K_max, C)
+                    sampled_anchor_audio = anchor_audio  # (B, K_max, audio_dim)
+                elif r < 0.8:
+                    # 20%: no anchor (unconditional)
+                    pass  # anchor_frames stays None
+                else:
+                    # 20%: random shorter anchor
+                    K = torch.randint(1, self.anchor_max_frames, (1,)).item()
+                    anchor_frames = anchor_pool[:, -K:, :]
+                    if anchor_audio is not None:
+                        sampled_anchor_audio = anchor_audio[:, -K:, :]
             else:
                 # Inference: use full anchor_pool as-is
                 anchor_frames = anchor_pool
+                sampled_anchor_audio = anchor_audio
 
         # Store for continuation velocity loss (training loop retrieves via get_last_anchor_frames)
         self._last_anchor_frames = anchor_frames
@@ -798,12 +835,14 @@ class LengthConditionedVAE(nn.Module):
                                                    lengths=lengths, audio_features=audio_features,
                                                    kl_per_level=kl_per_level,
                                                    anchor_frames=anchor_frames,
-                                                   speaker_id=speaker_id)
+                                                   speaker_id=speaker_id,
+                                                   anchor_audio=sampled_anchor_audio)
 
         # Decode to same length as input
         recon = self.decode(z, T, padding_mask, gesture_type=gesture_type,
                            lengths=lengths, audio_features=audio_features,
-                           anchor_frames=anchor_frames, speaker_id=speaker_id)
+                           anchor_frames=anchor_frames, speaker_id=speaker_id,
+                           anchor_audio=sampled_anchor_audio)
 
         if compute_geometry and self.use_smplx:
             vertices, joints = self.smplx_layer(recon)
@@ -819,10 +858,18 @@ class LengthConditionedVAE(nn.Module):
         """
         return getattr(self, '_last_anchor_frames', None)
 
+    def get_last_anchor_recon(self):
+        """Return the decoder's reconstruction of anchor frames from the most recent forward pass.
+
+        Used for anchor reconstruction loss — ensures the decoder maintains
+        meaningful representations at anchor positions.
+        """
+        return getattr(self.decoder, '_last_anchor_recon', None)
+
     def _forward_with_intermediate(self, z, length, kl_loss, raw_kl, x, padding_mask,
                                    compute_geometry, gesture_type=None, lengths=None,
                                    audio_features=None, kl_per_level=None, anchor_frames=None,
-                                   speaker_id=None):
+                                   speaker_id=None, anchor_audio=None):
         """Forward with intermediate outputs for progressive training."""
         intermediate_outputs = []
         level_dim = self.latent_dim // self.n_level
@@ -840,7 +887,8 @@ class LengthConditionedVAE(nn.Module):
                                        gesture_type=gesture_type, lengths=lengths,
                                        audio_features=audio_features,
                                        anchor_frames=anchor_frames,
-                                       speaker_id=speaker_id)
+                                       speaker_id=speaker_id,
+                                       anchor_audio=anchor_audio)
             intermediate_outputs.append(level_output)
 
         if compute_geometry and self.use_smplx:
@@ -851,7 +899,7 @@ class LengthConditionedVAE(nn.Module):
 
     def sample(self, batch_size, length, device='cuda', temperature=1.0,
                gesture_type=None, audio_features=None, anchor_frames=None,
-               speaker_id=None):
+               speaker_id=None, anchor_audio=None):
         """
         Sample motion sequences of specified length.
 
@@ -864,6 +912,7 @@ class LengthConditionedVAE(nn.Module):
             audio_features: (B, T, audio_dim) - audio features, optional
             anchor_frames: (B, K, in_channel) - preceding frames for continuation, optional
             speaker_id: (B,) - speaker indices, optional
+            anchor_audio: (B, K, audio_dim) - audio for anchor frames, optional
 
         Returns:
             (batch_size, length, out_channel) - generated motion
@@ -871,7 +920,7 @@ class LengthConditionedVAE(nn.Module):
         z = torch.randn(batch_size, self.latent_dim, device=device) * temperature
         return self.decode(z, length, gesture_type=gesture_type,
                           audio_features=audio_features, anchor_frames=anchor_frames,
-                          speaker_id=speaker_id)
+                          speaker_id=speaker_id, anchor_audio=anchor_audio)
 
     def interpolate(self, x1, x2, num_steps=10, length=None, gesture_type=None,
                     audio_features=None):

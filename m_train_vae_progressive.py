@@ -257,7 +257,8 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
                      use_smplx_loss=False, pose_loss_weight=1.0, vertex_loss_weight=1.0, joint_loss_weight=1.0,
                      level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
                      level_loss_configs=None, kl_anneal_epochs=100, max_kl_weight=0.05,
-                     vel_weight=1.0, cont_vel_weight=1.0):
+                     vel_weight=1.0, cont_vel_weight=50.0,
+                     anchor_recon_weight=0.1):
     """
     Progressive training with stop gradients between levels and global losses.
     Supports variable-length batches with audio and gesture type conditioning.
@@ -321,6 +322,10 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             if anchor_pool is not None:
                 anchor_pool = anchor_pool.to(device)
 
+            anchor_audio = data.get('anchor_audio', None)
+            if anchor_audio is not None:
+                anchor_audio = anchor_audio.to(device)
+
             gt_joints = data.get('gt_joints', None)
             gt_vertices = data.get('gt_vertices', None)
             if gt_joints is not None:
@@ -335,6 +340,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             padding_mask = None
             audio = None
             anchor_pool = None
+            anchor_audio = None
             gt_joints = None
             gt_vertices = None
 
@@ -342,7 +348,8 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
         result = model(poses, padding_mask=padding_mask, gesture_type=gesture_type,
                       lengths=lengths, audio_features=audio,
                       compute_geometry=use_smplx_loss, return_intermediate=True,
-                      anchor_pool=anchor_pool, speaker_id=speaker_id)
+                      anchor_pool=anchor_pool, speaker_id=speaker_id,
+                      anchor_audio=anchor_audio)
 
         if use_smplx_loss:
             intermediate_outputs, latent_loss, raw_kl, pred_vertices, pred_joints, kl_per_level = result
@@ -424,6 +431,17 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
                 level_3_output, poses, used_anchor_frames, anchor_pool)
         global_dict['cont_vel'] = cont_vel_loss.item()
 
+        # ==================== Anchor Reconstruction Loss ====================
+        # Ensure decoder maintains meaningful representations at anchor positions
+        anchor_recon = actual_model.get_last_anchor_recon()
+        anchor_recon_loss = torch.tensor(0.0, device=device)
+        if anchor_recon is not None and anchor_pool is not None and anchor_recon_weight > 0:
+            # anchor_recon: (B, K, C), anchor_pool last K frames: (B, K_max, C)
+            K_recon = anchor_recon.shape[1]
+            anchor_gt = anchor_pool[:, -K_recon:, :]  # match the K frames used
+            anchor_recon_loss = F.mse_loss(anchor_recon, anchor_gt)
+        global_dict['anchor_recon'] = anchor_recon_loss.item()
+
         # ==================== Combine All Losses ====================
         latent_loss = latent_loss.mean()
 
@@ -433,6 +451,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             level_3_weight * level_3_local_loss +
             global_loss +
             cont_vel_weight * cont_vel_loss +
+            anchor_recon_weight * anchor_recon_loss +
             latent_loss_weight * latent_loss
         )
 
