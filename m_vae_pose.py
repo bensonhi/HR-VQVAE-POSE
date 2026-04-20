@@ -492,29 +492,20 @@ class LengthConditionedDecoder(nn.Module):
         B = z.size(0)
         device = z.device
 
-        # z_embed for AdaLN: latent + length + gesture + speaker conditioning
+        # z_embed for AdaLN: latent + gesture + speaker conditioning
+        # NOTE: length_embed intentionally excluded — explicit length conditioning
+        # caused the model to learn length-dependent velocity (short=fast, long=slow)
+        # while GT velocity is flat. The decoder infers length from positional queries
+        # and padding mask instead.
         z_embed = self.latent_proj(z)  # (B, d_model)
-        if lengths is not None:
-            z_embed = z_embed + self.length_embed(lengths)
-        else:
-            z_embed = z_embed + self.length_embed(torch.tensor([target_length] * B, device=device))
         if gesture_type is not None:
             z_embed = z_embed + self.gesture_embed(gesture_type)
         if speaker_id is not None and self.speaker_embed is not None:
             z_embed = z_embed + self.speaker_embed(speaker_id)
 
-        # z memory tokens for cross-attention
-        z_memory = self.memory_expand(z_embed)  # (B, d_model * M)
-        z_memory = z_memory.view(B, self.num_memory_tokens, self.d_model)
-
-        # Memory token dropout (inverted dropout, classifier-free guidance style)
-        if self.training and self.memory_dropout_prob > 0:
-            keep_prob = 1.0 - self.memory_dropout_prob
-            mask = torch.bernoulli(torch.full(
-                (B, self.num_memory_tokens, 1), keep_prob, device=device))
-            z_memory = z_memory * mask / keep_prob
-
-        # Build cross-attention memory: [z_tokens, audio_tokens] or [z_tokens]
+        # Cross-attention memory: audio only (z conditions via AdaLN, not cross-attn).
+        # This forces a clean separation: z controls "style" through AdaLN modulation,
+        # audio controls "content/timing" through cross-attention.
         # When anchor_audio is provided, prepend it to audio so positions align with queries:
         #   query positions: [anchor(0..K-1), gen(K..K+T-1)]
         #   audio positions: [anchor_audio(0..K-1), gen_audio(K..K+T-1)]
@@ -522,12 +513,14 @@ class LengthConditionedDecoder(nn.Module):
             if anchor_audio is not None and anchor_frames is not None:
                 K_audio = anchor_audio.shape[1]
                 full_audio = torch.cat([anchor_audio, audio_features], dim=1)  # (B, K+T, audio_dim)
-                audio_memory = self.audio_pos_encoder(self.audio_proj(full_audio))
+                memory = self.audio_pos_encoder(self.audio_proj(full_audio))
             else:
-                audio_memory = self.audio_pos_encoder(self.audio_proj(audio_features))
-            memory = torch.cat([z_memory, audio_memory], dim=1)  # (B, M+K+T, D) or (B, M+T, D)
+                memory = self.audio_pos_encoder(self.audio_proj(audio_features))
         else:
-            memory = z_memory  # (B, M, D) — sampling mode (ACTOR-style)
+            # No audio: use z memory tokens as fallback (sampling without audio)
+            z_memory = self.memory_expand(z_embed)  # (B, d_model * M)
+            z_memory = z_memory.view(B, self.num_memory_tokens, self.d_model)
+            memory = z_memory
 
         # Anchor frames: prepend projected anchor tokens to generation queries
         # Single shared positional encoding over [anchor(K), generation(T)] gives
@@ -560,12 +553,12 @@ class LengthConditionedDecoder(nn.Module):
         if K > 0:
             anchor_recon = self.output_proj(x[:, :K])
             gen_output = self.output_proj(x[:, K:])
-            # Store anchor recon for loss computation
-            self._last_anchor_recon = anchor_recon
-            return gen_output
+                # Return anchor recon alongside generated output
+            self._last_anchor_recon = anchor_recon  # kept for single-GPU backward compat
+            return gen_output, anchor_recon
         else:
             self._last_anchor_recon = None
-            return self.output_proj(x)
+            return self.output_proj(x), None
 
 
 class VAELevel(nn.Module):
@@ -598,7 +591,7 @@ class LengthConditionedVAE(nn.Module):
 
     Sampling:
         z = torch.randn(batch_size, latent_dim)
-        motion = model.decode(z, length=200)  # Generate 200 frames
+        motion, _ = model.decode(z, length=200)  # Generate 200 frames
     """
     def __init__(
             self,
@@ -752,6 +745,7 @@ class LengthConditionedVAE(nn.Module):
 
         Returns:
             (B, length, out_channel) - generated motion
+            anchor_recon: (B, K, out_channel) or None - anchor frame reconstruction
         """
         return self.decoder(z, length, padding_mask, gesture_type=gesture_type,
                            lengths=lengths, audio_features=audio_features,
@@ -821,7 +815,7 @@ class LengthConditionedVAE(nn.Module):
                 anchor_frames = anchor_pool
                 sampled_anchor_audio = anchor_audio
 
-        # Store for continuation velocity loss (training loop retrieves via get_last_anchor_frames)
+        # Store for backward compat (single-GPU)
         self._last_anchor_frames = anchor_frames
 
         # Encode
@@ -839,7 +833,7 @@ class LengthConditionedVAE(nn.Module):
                                                    anchor_audio=sampled_anchor_audio)
 
         # Decode to same length as input
-        recon = self.decode(z, T, padding_mask, gesture_type=gesture_type,
+        recon, anchor_recon = self.decode(z, T, padding_mask, gesture_type=gesture_type,
                            lengths=lengths, audio_features=audio_features,
                            anchor_frames=anchor_frames, speaker_id=speaker_id,
                            anchor_audio=sampled_anchor_audio)
@@ -872,6 +866,7 @@ class LengthConditionedVAE(nn.Module):
                                    speaker_id=None, anchor_audio=None):
         """Forward with intermediate outputs for progressive training."""
         intermediate_outputs = []
+        anchor_recon = None
         level_dim = self.latent_dim // self.n_level
 
         for i in range(self.n_level):
@@ -883,13 +878,16 @@ class LengthConditionedVAE(nn.Module):
             if end_idx < self.latent_dim:
                 z_partial[:, end_idx:] = 0
 
-            level_output = self.decode(z_partial, length, padding_mask,
+            level_output, level_anchor_recon = self.decode(z_partial, length, padding_mask,
                                        gesture_type=gesture_type, lengths=lengths,
                                        audio_features=audio_features,
                                        anchor_frames=anchor_frames,
                                        speaker_id=speaker_id,
                                        anchor_audio=anchor_audio)
             intermediate_outputs.append(level_output)
+            # Keep anchor_recon from last level (full z)
+            if i == self.n_level - 1:
+                anchor_recon = level_anchor_recon
 
         if compute_geometry and self.use_smplx:
             vertices, joints = self.smplx_layer(intermediate_outputs[-1])
@@ -918,9 +916,10 @@ class LengthConditionedVAE(nn.Module):
             (batch_size, length, out_channel) - generated motion
         """
         z = torch.randn(batch_size, self.latent_dim, device=device) * temperature
-        return self.decode(z, length, gesture_type=gesture_type,
+        output, _anchor_recon = self.decode(z, length, gesture_type=gesture_type,
                           audio_features=audio_features, anchor_frames=anchor_frames,
                           speaker_id=speaker_id, anchor_audio=anchor_audio)
+        return output
 
     def interpolate(self, x1, x2, num_steps=10, length=None, gesture_type=None,
                     audio_features=None):
@@ -949,7 +948,7 @@ class LengthConditionedVAE(nn.Module):
 
         for alpha in alphas:
             z_interp = (1 - alpha) * z1 + alpha * z2
-            motion = self.decode(z_interp, length, gesture_type=gesture_type,
+            motion, _ = self.decode(z_interp, length, gesture_type=gesture_type,
                                 audio_features=audio_features)
             interpolated.append(motion)
 
@@ -982,11 +981,577 @@ class LengthConditionedVAE(nn.Module):
         if end_idx < self.latent_dim:
             z_partial[:, end_idx:] = 0
 
-        recon = self.decode(z_partial, T, padding_mask, gesture_type=gesture_type,
+        recon, _ = self.decode(z_partial, T, padding_mask, gesture_type=gesture_type,
                            lengths=lengths, audio_features=audio_features,
                            speaker_id=speaker_id)
 
         return recon, kl_loss
+
+
+# ==================== TEMPORAL LATENT VAE ====================
+# Instead of encoding the entire motion into a single latent vector,
+# this architecture produces a sequence of temporal latent tokens
+# (B, T', latent_dim) where T' = ceil(T / temporal_downsample).
+# This preserves temporal variation through the bottleneck.
+
+
+class TemporalEncoder(nn.Module):
+    """Transformer encoder that produces temporal latent sequence via strided downsampling."""
+
+    def __init__(self, in_channel, d_model, latent_dim, temporal_downsample=8,
+                 nhead=8, num_layers=4, dim_feedforward=1024, dropout=0.1,
+                 audio_dim=None, num_speakers=0, text_dim=0):
+        super().__init__()
+        self.temporal_downsample = temporal_downsample
+        self.d_model = d_model
+
+        self.input_proj = nn.Linear(in_channel, d_model)
+
+        self.audio_input_proj = None
+        if audio_dim is not None:
+            self.audio_input_proj = AudioProjection(audio_dim, d_model)
+
+        self.text_input_proj = None
+        if text_dim > 0:
+            self.text_input_proj = AudioProjection(text_dim, d_model)
+
+        self.gesture_embed = GestureTypeEmbedding(d_model)
+
+        self.speaker_embed = None
+        if num_speakers > 0:
+            self.speaker_embed = nn.Embedding(num_speakers, d_model)
+
+        self.pos_encoder = PositionalEncoding(d_model, dropout=dropout)
+
+        self.layers = nn.ModuleList([
+            TransformerEncoderBlock(d_model, nhead, dim_feedforward, dropout)
+            for _ in range(num_layers)
+        ])
+
+        self.norm = nn.LayerNorm(d_model)
+
+        # Strided 1D conv for temporal downsampling: (B, d_model, T) -> (B, d_model, T')
+        self.downsample = nn.Conv1d(
+            d_model, d_model,
+            kernel_size=temporal_downsample,
+            stride=temporal_downsample,
+        )
+        self.downsample_post = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.GELU(),
+        )
+
+        # Per-token mu and logvar
+        self.fc_mu = nn.Linear(d_model, latent_dim)
+        self.fc_logvar = nn.Linear(d_model, latent_dim)
+
+    def forward(self, x, padding_mask=None, gesture_type=None, audio_features=None,
+                speaker_id=None, text_features=None):
+        """
+        Args:
+            x: (B, T, in_channel)
+            padding_mask: (B, T) - True for padded positions
+            text_features: (B, T, text_dim) - optional BERT embeddings
+        Returns:
+            mu: (B, T', latent_dim)
+            logvar: (B, T', latent_dim)
+            z_padding_mask: (B, T') or None
+        """
+        B, T, _ = x.shape
+
+        x = self.input_proj(x)
+
+        if audio_features is not None and self.audio_input_proj is not None:
+            x = x + self.audio_input_proj(audio_features)
+
+        if text_features is not None and self.text_input_proj is not None:
+            x = x + self.text_input_proj(text_features[:, :T])
+
+        x = self.pos_encoder(x)
+
+        for layer in self.layers:
+            x = layer(x, src_key_padding_mask=padding_mask)
+
+        x = self.norm(x)
+
+        # Add gesture/speaker embeddings broadcast across time
+        if gesture_type is not None:
+            x = x + self.gesture_embed(gesture_type).unsqueeze(1)
+        if speaker_id is not None and self.speaker_embed is not None:
+            x = x + self.speaker_embed(speaker_id).unsqueeze(1)
+
+        # Pad T to next multiple of temporal_downsample so conv covers all frames
+        T_prime = math.ceil(T / self.temporal_downsample)
+        T_padded = T_prime * self.temporal_downsample
+
+        x_conv = x.transpose(1, 2)  # (B, d_model, T)
+
+        # Zero out padded positions before conv to prevent leaking
+        if padding_mask is not None:
+            x_conv = x_conv * (~padding_mask).unsqueeze(1).float()
+
+        if T_padded > T:
+            x_conv = F.pad(x_conv, (0, T_padded - T), value=0)
+
+        x_down = self.downsample(x_conv)  # (B, d_model, T')
+        x_down = x_down.transpose(1, 2)   # (B, T', d_model)
+        x_down = self.downsample_post(x_down)
+
+        # Compute z padding mask: a latent token is padded if ALL source frames are padded
+        z_padding_mask = None
+        if padding_mask is not None:
+            pm_float = padding_mask.float()
+            if T_padded > T:
+                pm_float = F.pad(pm_float, (0, T_padded - T), value=1.0)
+            pm_reshaped = pm_float.view(B, T_prime, self.temporal_downsample)
+            z_padding_mask = pm_reshaped.min(dim=-1).values > 0.5
+
+        mu = self.fc_mu(x_down)
+        logvar = self.fc_logvar(x_down)
+
+        return mu, logvar, z_padding_mask
+
+
+class TemporalLatentDecoderBlock(nn.Module):
+    """Pre-norm decoder block with dual cross-attention to temporal latents and audio."""
+
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.cross_attn_z = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.cross_attn_audio = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, d_model),
+            nn.Dropout(dropout),
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.norm4 = nn.LayerNorm(d_model)
+        self.dropout_module = nn.Dropout(dropout)
+
+    def forward(self, x, z_memory, audio_memory=None,
+                tgt_key_padding_mask=None, z_key_padding_mask=None):
+        """
+        Args:
+            x: (B, T, D) - queries
+            z_memory: (B, T', D) - temporal latent sequence
+            audio_memory: (B, T_audio, D) - audio features, or None
+        """
+        # Pre-norm self-attention
+        h = self.norm1(x)
+        h, _ = self.self_attn(h, h, h, key_padding_mask=tgt_key_padding_mask)
+        x = x + self.dropout_module(h)
+
+        # Pre-norm cross-attention to temporal latents
+        h = self.norm2(x)
+        h, _ = self.cross_attn_z(h, z_memory, z_memory, key_padding_mask=z_key_padding_mask)
+        x = x + self.dropout_module(h)
+
+        # Pre-norm cross-attention to audio (skipped when None, e.g. sampling without audio)
+        if audio_memory is not None:
+            h = self.norm3(x)
+            h, _ = self.cross_attn_audio(h, audio_memory, audio_memory)
+            x = x + self.dropout_module(h)
+
+        # Pre-norm FFN
+        h = self.norm4(x)
+        x = x + self.ffn(h)
+        return x
+
+
+class TemporalLatentDecoder(nn.Module):
+    """Decoder that cross-attends to temporal latent sequence + audio."""
+
+    def __init__(self, out_channel, d_model, latent_dim, nhead=8, num_layers=4,
+                 dim_feedforward=1024, dropout=0.1, max_len=1024, audio_dim=None,
+                 num_speakers=0, text_dim=0):
+        super().__init__()
+        self.d_model = d_model
+        self.max_len = max_len
+
+        # Project temporal latent tokens to d_model
+        self.latent_proj = nn.Linear(latent_dim, d_model)
+        self.latent_pos_encoder = PositionalEncoding(d_model, max_len=512, dropout=dropout)
+
+        self.gesture_embed = GestureTypeEmbedding(d_model)
+
+        self.speaker_embed = None
+        if num_speakers > 0:
+            self.speaker_embed = nn.Embedding(num_speakers, d_model)
+
+        self.audio_proj = None
+        self.audio_pos_encoder = None
+        if audio_dim is not None:
+            self.audio_proj = AudioProjection(audio_dim, d_model)
+            self.audio_pos_encoder = PositionalEncoding(d_model, max_len=max_len * 2, dropout=dropout)
+
+        self.text_proj = None
+        if text_dim > 0:
+            self.text_proj = AudioProjection(text_dim, d_model)
+
+        self.anchor_proj = nn.Linear(out_channel, d_model)
+        self.query_embed = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+        self.pos_encoder = PositionalEncoding(d_model, max_len=max_len * 2, dropout=dropout)
+
+        self.layers = nn.ModuleList([
+            TemporalLatentDecoderBlock(d_model, nhead, dim_feedforward, dropout)
+            for _ in range(num_layers)
+        ])
+
+        self.norm = nn.LayerNorm(d_model)
+        self.output_proj = nn.Linear(d_model, out_channel)
+
+    def forward(self, z_seq, target_length, padding_mask=None, gesture_type=None,
+                lengths=None, audio_features=None, anchor_frames=None, speaker_id=None,
+                anchor_audio=None, z_padding_mask=None, text_features=None):
+        """
+        Args:
+            z_seq: (B, T', latent_dim) - temporal latent sequence
+            target_length: int - desired output length
+            z_padding_mask: (B, T') - padding mask for latent tokens
+            text_features: (B, T, text_dim) - optional BERT embeddings
+        Returns:
+            (B, target_length, out_channel), anchor_recon or None
+        """
+        B = z_seq.size(0)
+        device = z_seq.device
+
+        # Project and position-encode temporal latents
+        z_memory = self.latent_proj(z_seq)
+        if gesture_type is not None:
+            z_memory = z_memory + self.gesture_embed(gesture_type).unsqueeze(1)
+        if speaker_id is not None and self.speaker_embed is not None:
+            z_memory = z_memory + self.speaker_embed(speaker_id).unsqueeze(1)
+        z_memory = self.latent_pos_encoder(z_memory)
+
+        # Audio memory (with optional text fusion)
+        audio_memory = None
+        if audio_features is not None and self.audio_proj is not None:
+            if anchor_audio is not None and anchor_frames is not None:
+                full_audio = torch.cat([anchor_audio, audio_features], dim=1)
+                audio_memory = self.audio_proj(full_audio)
+                # Add text to generation portion only (no text for anchor frames)
+                if text_features is not None and self.text_proj is not None:
+                    K_anc = anchor_audio.shape[1]
+                    T_gen = audio_features.shape[1]
+                    text_emb = self.text_proj(text_features[:, :T_gen])
+                    text_padded = F.pad(text_emb, (0, 0, K_anc, 0))  # (B, K+T, d_model)
+                    audio_memory = audio_memory + text_padded
+                audio_memory = self.audio_pos_encoder(audio_memory)
+            else:
+                audio_memory = self.audio_proj(audio_features)
+                if text_features is not None and self.text_proj is not None:
+                    T_aud = audio_features.shape[1]
+                    audio_memory = audio_memory + self.text_proj(text_features[:, :T_aud])
+                audio_memory = self.audio_pos_encoder(audio_memory)
+
+        # Build query sequence (with optional anchor prefix)
+        K = 0
+        if anchor_frames is not None and anchor_frames.shape[1] > 0:
+            K = anchor_frames.shape[1]
+            anchor_tokens = self.anchor_proj(anchor_frames)
+            last_anchor = anchor_tokens[:, -1:, :]
+            gen_queries = self.query_embed.expand(B, target_length, -1) + last_anchor
+            full_seq = torch.cat([anchor_tokens, gen_queries], dim=1)
+            x = self.pos_encoder(full_seq)
+            if padding_mask is not None:
+                anchor_valid = torch.zeros(B, K, dtype=torch.bool, device=device)
+                full_padding_mask = torch.cat([anchor_valid, padding_mask], dim=1)
+            else:
+                full_padding_mask = None
+        else:
+            x = self.pos_encoder(self.query_embed.expand(B, target_length, -1))
+            full_padding_mask = padding_mask
+
+        # Decoder layers
+        for layer in self.layers:
+            x = layer(x, z_memory=z_memory, audio_memory=audio_memory,
+                      tgt_key_padding_mask=full_padding_mask,
+                      z_key_padding_mask=z_padding_mask)
+
+        x = self.norm(x)
+
+        if K > 0:
+            anchor_recon = self.output_proj(x[:, :K])
+            gen_output = self.output_proj(x[:, K:])
+            self._last_anchor_recon = anchor_recon
+            return gen_output, anchor_recon
+        else:
+            self._last_anchor_recon = None
+            return self.output_proj(x), None
+
+
+class TemporalLatentVAE(nn.Module):
+    """VAE with temporal latent sequence for motion generation.
+
+    Instead of encoding to a single z vector, produces (B, T', latent_dim)
+    where T' = ceil(T / temporal_downsample). This preserves temporal variation
+    through the bottleneck, enabling better reconstruction of dynamics.
+    """
+
+    def __init__(
+            self,
+            in_channel=165,
+            d_model=256,
+            latent_dim=64,
+            embed_dim=64,
+            nhead=8,
+            num_encoder_layers=4,
+            num_decoder_layers=4,
+            dim_feedforward=1024,
+            n_level=3,
+            dropout=0.1,
+            max_len=1024,
+            audio_dim=None,
+            target_kl=0.0,
+            temporal_downsample=8,
+            condition_dropout_prob=0.0,
+            anchor_max_frames=30,
+            anchor_prob=0.5,
+            num_speakers=0,
+            use_smplx=False,
+            smplx_model_path='models_smplx_v1_1/models',
+            text_dim=0,
+            # Legacy params (ignored, kept for config compat)
+            num_memory_tokens=4,
+            memory_dropout_prob=0.0,
+            free_bits=None,
+            channel=None,
+            n_res_block=None,
+            n_res_channel=None,
+            stride=None,
+            decay=None,
+    ):
+        super().__init__()
+
+        self.latent_dim = latent_dim
+        self.embed_dim = embed_dim
+        self.n_level = n_level
+        self.max_len = max_len
+        self.target_kl = target_kl
+        self.temporal_downsample = temporal_downsample
+        self.condition_dropout_prob = condition_dropout_prob
+        self.anchor_max_frames = anchor_max_frames
+        self.anchor_prob = anchor_prob
+        self.text_dim = text_dim
+
+        self.encoder = TemporalEncoder(
+            in_channel, d_model, latent_dim, temporal_downsample,
+            nhead, num_encoder_layers, dim_feedforward, dropout,
+            audio_dim=audio_dim, num_speakers=num_speakers, text_dim=text_dim,
+        )
+
+        self.decoder = TemporalLatentDecoder(
+            in_channel, d_model, latent_dim,
+            nhead, num_decoder_layers, dim_feedforward, dropout, max_len,
+            audio_dim=audio_dim, num_speakers=num_speakers, text_dim=text_dim,
+        )
+
+        self.use_smplx = use_smplx
+        if use_smplx:
+            self.smplx_layer = SMPLXLayer(model_path=smplx_model_path)
+        else:
+            self.smplx_layer = None
+
+    def encode(self, x, padding_mask=None, gesture_type=None, audio_features=None,
+               speaker_id=None, text_features=None):
+        """
+        Encode motion to temporal latent sequence.
+
+        Returns:
+            z: (B, T', latent_dim)
+            mu: (B, T', latent_dim)
+            logvar: (B, T', latent_dim)
+            kl_for_loss: scalar
+            total_raw_kl: scalar
+            kl_losses: list of per-level KL scalars
+        """
+        mu, logvar, z_padding_mask = self.encoder(
+            x, padding_mask, gesture_type=gesture_type,
+            audio_features=audio_features, speaker_id=speaker_id,
+            text_features=text_features)
+
+        self._z_padding_mask = z_padding_mask
+
+        # Reparameterize
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = mu + eps * std  # (B, T', latent_dim)
+
+        # KL per level (progressive partitioning on latent_dim axis)
+        level_dim = self.latent_dim // self.n_level
+        kl_losses = []
+
+        for lv in range(self.n_level):
+            start_idx = lv * level_dim
+            end_idx = start_idx + level_dim
+            if lv == self.n_level - 1:
+                end_idx = self.latent_dim
+
+            mu_lv = mu[:, :, start_idx:end_idx]
+            logvar_lv = logvar[:, :, start_idx:end_idx]
+
+            kl_per_elem = -0.5 * (1 + logvar_lv - mu_lv.pow(2) - logvar_lv.exp())
+
+            # Mask padded temporal tokens
+            if z_padding_mask is not None:
+                kl_per_elem = kl_per_elem * (~z_padding_mask).unsqueeze(-1).float()
+
+            # Sum over (time, dims), mean over batch
+            kl_lv = kl_per_elem.sum(dim=(1, 2)).mean()
+            kl_losses.append(kl_lv)
+
+        total_raw_kl = sum(kl_losses)
+
+        if self.target_kl > 0:
+            kl_for_loss = torch.max(torch.tensor(self.target_kl, device=mu.device), total_raw_kl)
+        else:
+            kl_for_loss = total_raw_kl
+
+        return z, mu, logvar, kl_for_loss, total_raw_kl, kl_losses
+
+    def decode(self, z, length, padding_mask=None, gesture_type=None, lengths=None,
+               audio_features=None, anchor_frames=None, speaker_id=None,
+               anchor_audio=None, z_padding_mask=None, text_features=None):
+        """Decode temporal latent sequence to motion."""
+        if z_padding_mask is None:
+            z_padding_mask = getattr(self, '_z_padding_mask', None)
+
+        return self.decoder(z, length, padding_mask, gesture_type=gesture_type,
+                            lengths=lengths, audio_features=audio_features,
+                            anchor_frames=anchor_frames, speaker_id=speaker_id,
+                            anchor_audio=anchor_audio, z_padding_mask=z_padding_mask,
+                            text_features=text_features)
+
+    def forward(self, x, padding_mask=None, gesture_type=None, lengths=None,
+                audio_features=None, compute_geometry=False, return_intermediate=False,
+                anchor_pool=None, speaker_id=None, anchor_audio=None, text_features=None):
+        B, T, _ = x.shape
+
+        # Condition dropout
+        if self.training and self.condition_dropout_prob > 0:
+            if torch.rand(1).item() < self.condition_dropout_prob:
+                audio_features = None
+                anchor_audio = None
+                gesture_type = None
+                text_features = None
+
+        # Anchor sampling (same strategy as LengthConditionedVAE)
+        anchor_frames = None
+        sampled_anchor_audio = None
+        if anchor_pool is not None and self.anchor_max_frames > 0:
+            if self.training:
+                r = torch.rand(1).item()
+                if r < 0.6:
+                    anchor_frames = anchor_pool
+                    sampled_anchor_audio = anchor_audio
+                elif r < 0.8:
+                    pass
+                else:
+                    K = torch.randint(1, self.anchor_max_frames, (1,)).item()
+                    anchor_frames = anchor_pool[:, -K:, :]
+                    if anchor_audio is not None:
+                        sampled_anchor_audio = anchor_audio[:, -K:, :]
+            else:
+                anchor_frames = anchor_pool
+                sampled_anchor_audio = anchor_audio
+
+        self._last_anchor_frames = anchor_frames
+
+        # Encode
+        z, mu, logvar, kl_loss, raw_kl, kl_per_level = self.encode(
+            x, padding_mask, gesture_type=gesture_type,
+            audio_features=audio_features, speaker_id=speaker_id,
+            text_features=text_features)
+
+        z_padding_mask = self._z_padding_mask
+
+        if return_intermediate:
+            return self._forward_with_intermediate(
+                z, T, kl_loss, raw_kl, x, padding_mask,
+                compute_geometry, gesture_type=gesture_type,
+                lengths=lengths, audio_features=audio_features,
+                kl_per_level=kl_per_level,
+                anchor_frames=anchor_frames,
+                speaker_id=speaker_id,
+                anchor_audio=sampled_anchor_audio,
+                z_padding_mask=z_padding_mask,
+                text_features=text_features)
+
+        recon, anchor_recon = self.decode(
+            z, T, padding_mask, gesture_type=gesture_type,
+            lengths=lengths, audio_features=audio_features,
+            anchor_frames=anchor_frames, speaker_id=speaker_id,
+            anchor_audio=sampled_anchor_audio,
+            z_padding_mask=z_padding_mask,
+            text_features=text_features)
+
+        if compute_geometry and self.use_smplx:
+            vertices, joints = self.smplx_layer(recon)
+            return recon, kl_loss, raw_kl, vertices, joints
+
+        return recon, kl_loss, raw_kl
+
+    def _forward_with_intermediate(self, z, length, kl_loss, raw_kl, x, padding_mask,
+                                   compute_geometry, gesture_type=None, lengths=None,
+                                   audio_features=None, kl_per_level=None,
+                                   anchor_frames=None, speaker_id=None,
+                                   anchor_audio=None, z_padding_mask=None,
+                                   text_features=None):
+        """Progressive training: decode with partial z dims per level."""
+        intermediate_outputs = []
+        level_dim = self.latent_dim // self.n_level
+
+        for i in range(self.n_level):
+            end_idx = (i + 1) * level_dim
+            if i == self.n_level - 1:
+                end_idx = self.latent_dim
+
+            z_partial = z.clone()
+            if end_idx < self.latent_dim:
+                z_partial[:, :, end_idx:] = 0  # Zero higher dims for each temporal token
+
+            level_output, _ = self.decode(
+                z_partial, length, padding_mask,
+                gesture_type=gesture_type, lengths=lengths,
+                audio_features=audio_features,
+                anchor_frames=anchor_frames,
+                speaker_id=speaker_id,
+                anchor_audio=anchor_audio,
+                z_padding_mask=z_padding_mask,
+                text_features=text_features)
+            intermediate_outputs.append(level_output)
+
+        if compute_geometry and self.use_smplx:
+            vertices, joints = self.smplx_layer(intermediate_outputs[-1])
+            return intermediate_outputs, kl_loss, raw_kl, vertices, joints, kl_per_level
+
+        return intermediate_outputs, kl_loss, raw_kl, kl_per_level
+
+    def get_last_anchor_frames(self):
+        return getattr(self, '_last_anchor_frames', None)
+
+    def get_last_anchor_recon(self):
+        return getattr(self.decoder, '_last_anchor_recon', None)
+
+    def sample(self, batch_size, length, device='cuda', temperature=1.0,
+               gesture_type=None, audio_features=None, anchor_frames=None,
+               speaker_id=None, anchor_audio=None):
+        T_prime = math.ceil(length / self.temporal_downsample)
+        z_seq = torch.randn(batch_size, T_prime, self.latent_dim, device=device) * temperature
+        # Clear stale z_padding_mask from any previous encode() call
+        self._z_padding_mask = None
+        output, _ = self.decode(z_seq, length, gesture_type=gesture_type,
+                                audio_features=audio_features,
+                                anchor_frames=anchor_frames,
+                                speaker_id=speaker_id,
+                                anchor_audio=anchor_audio,
+                                z_padding_mask=None)
+        return output
 
 
 # Aliases for backward compatibility

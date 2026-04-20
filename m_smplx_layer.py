@@ -39,10 +39,10 @@ class SMPLXLayer(nn.Module):
     """
     def __init__(self,
                  model_path: str = 'models_smplx_v1_1/models',
-                 gender: str = 'neutral',
+                 gender: str = 'NEUTRAL_2020',
                  use_pca: bool = False,
-                 num_betas: int = 10,
-                 num_expression_coeffs: int = 10,
+                 num_betas: int = 300,
+                 num_expression_coeffs: int = 100,
                  batch_size: int = 1):
         """
         Args:

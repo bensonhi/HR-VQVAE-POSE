@@ -3,7 +3,7 @@ sys.path.append('../')
 import torch
 import os
 import glob
-from m_vae_pose import VAE_Pose_1, VAE_Pose_ML
+from m_vae_pose import VAE_Pose_1, VAE_Pose_ML, TemporalLatentVAE
 from m_conf_parser import model_option_parser, training_params_parser
 
 
@@ -23,7 +23,7 @@ def load_part(model, checkpoint, device):
 
 def create_model_object(model_type, options):
     if model_type == 'vae':
-        return VAE_Pose_ML(
+        common_kwargs = dict(
             in_channel=options['in_channel'],
             d_model=options.get('d_model', options.get('channel', 256)),
             latent_dim=options.get('latent_dim', 256),
@@ -46,6 +46,14 @@ def create_model_object(model_type, options):
             anchor_prob=options.get('anchor_prob', 0.5),
             num_speakers=options.get('num_speakers', 0),
         )
+        text_dim = options.get('text_dim', 0)
+        if text_dim > 0:
+            common_kwargs['text_dim'] = text_dim
+        temporal_downsample = options.get('temporal_downsample', 0)
+        if temporal_downsample > 1:
+            common_kwargs['temporal_downsample'] = temporal_downsample
+            return TemporalLatentVAE(**common_kwargs)
+        return VAE_Pose_ML(**common_kwargs)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -59,9 +67,8 @@ def get_model_type(folder_name):
 
 def get_path(dataset_name, run_num, folder_name, file_type, checkpoint=0):
     checkpoint = '{}'.format(str(checkpoint).zfill(3))
-    model_type = get_model_type(folder_name)
 
-    file_path = 'checkpoint/{}/{}/{}/'.format(*[dataset_name, run_num, model_type])
+    file_path = 'checkpoint/{}/{}/{}/'.format(*[dataset_name, run_num, folder_name])
 
     if file_type == 'conf':
         file_path += 'conf.ini'

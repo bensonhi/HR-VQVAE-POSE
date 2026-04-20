@@ -1,5 +1,6 @@
 import os
 import csv
+import json
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -34,9 +35,14 @@ def parse_sem_file(sem_path: str, total_frames: int, fps: int = 30) -> Tuple[Lis
     gesture_labels = np.zeros(total_frames, dtype=np.int64)  # default beat
     need_cut_mask = np.zeros(total_frames, dtype=bool)
 
+    # Try .sem then .txt extension
     if not os.path.exists(sem_path):
-        # No sem file: treat entire sequence as one valid region with beat label
-        return [(0, total_frames)], gesture_labels
+        txt_path = os.path.splitext(sem_path)[0] + '.txt'
+        if os.path.exists(txt_path):
+            sem_path = txt_path
+        else:
+            # No sem file: treat entire sequence as one valid region with beat label
+            return [(0, total_frames)], gesture_labels
 
     with open(sem_path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -49,12 +55,19 @@ def parse_sem_file(sem_path: str, total_frames: int, fps: int = 30) -> Tuple[Lis
             if len(parts) < 3:
                 continue
 
+            # Try BEAT2 format first: label \t start \t end ...
+            label = parts[0].strip()
             try:
-                start_time = float(parts[0])
-                end_time = float(parts[1])
-                label = parts[2].strip()
+                start_time = float(parts[1])
+                end_time = float(parts[2])
             except (ValueError, IndexError):
-                continue
+                # Fall back to original format: start \t end \t label
+                try:
+                    start_time = float(parts[0])
+                    end_time = float(parts[1])
+                    label = parts[2].strip()
+                except (ValueError, IndexError):
+                    continue
 
             start_frame = int(start_time * fps)
             end_frame = min(int(end_time * fps), total_frames)
@@ -69,8 +82,9 @@ def parse_sem_file(sem_path: str, total_frames: int, fps: int = 30) -> Tuple[Lis
             else:
                 gesture_labels[start_frame:end_frame] = 1  # semantic
 
-    # Build valid regions (contiguous non-need_cut regions)
-    valid_regions = []
+    # Build valid regions (contiguous non-need_cut regions, further split by gesture type)
+    # First pass: split on need_cut boundaries
+    raw_regions = []
     in_region = False
     region_start = 0
 
@@ -81,13 +95,99 @@ def parse_sem_file(sem_path: str, total_frames: int, fps: int = 30) -> Tuple[Lis
                 in_region = True
         else:
             if in_region:
-                valid_regions.append((region_start, i))
+                raw_regions.append((region_start, i))
                 in_region = False
 
     if in_region:
-        valid_regions.append((region_start, total_frames))
+        raw_regions.append((region_start, total_frames))
+
+    # Second pass: split each region at beat↔semantic boundaries
+    # so every region contains only one gesture type
+    valid_regions = []
+    for rs, re in raw_regions:
+        sub_start = rs
+        current_label = gesture_labels[rs]
+        for i in range(rs + 1, re):
+            if gesture_labels[i] != current_label:
+                valid_regions.append((sub_start, i))
+                sub_start = i
+                current_label = gesture_labels[i]
+        valid_regions.append((sub_start, re))
 
     return valid_regions, gesture_labels
+
+
+# =============================================================================
+# TextGrid parsing for text conditioning
+# =============================================================================
+
+def parse_textgrid_words(filepath: str) -> List[Tuple[float, float, str]]:
+    """Parse the 'words' tier from a Praat TextGrid file.
+
+    Returns list of (start_time, end_time, word) tuples.
+    """
+    intervals = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    in_words_tier = False
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if 'name = "words"' in line:
+            in_words_tier = True
+        elif 'name = "phones"' in line:
+            in_words_tier = False
+        elif in_words_tier and line.startswith('xmin = ') and i + 2 < len(lines):
+            next1 = lines[i + 1].strip()
+            next2 = lines[i + 2].strip()
+            if next1.startswith('xmax = ') and next2.startswith('text = '):
+                xmin = float(line.split('=')[1].strip())
+                xmax = float(next1.split('=')[1].strip())
+                text = next2.split('=')[1].strip().strip('"').lower()
+                if text:
+                    intervals.append((xmin, xmax, text))
+                i += 2
+        i += 1
+    return intervals
+
+
+def textgrid_to_frame_ids(textgrid_path: str, total_frames: int, vocab: dict,
+                          fps: int = 30) -> np.ndarray:
+    """Convert TextGrid word intervals to per-frame word IDs.
+
+    Args:
+        textgrid_path: Path to .TextGrid file
+        total_frames: Number of pose frames
+        vocab: dict mapping word -> index (must have <PAD>, <UNK>, <SIL>)
+        fps: Frame rate
+
+    Returns:
+        word_ids: np.array of shape (total_frames,) with vocab indices
+    """
+    sil_id = vocab.get('<SIL>', 2)
+    unk_id = vocab.get('<UNK>', 1)
+    word_ids = np.full(total_frames, sil_id, dtype=np.int64)
+
+    if not os.path.exists(textgrid_path):
+        return word_ids
+
+    intervals = parse_textgrid_words(textgrid_path)
+    for start_t, end_t, word in intervals:
+        start_f = int(start_t * fps)
+        end_f = min(int(end_t * fps), total_frames)
+        if start_f >= total_frames or start_f >= end_f:
+            continue
+        wid = vocab.get(word, unk_id)
+        word_ids[start_f:end_f] = wid
+
+    return word_ids
+
+
+def load_text_vocab(vocab_path: str = 'text_vocab.json') -> dict:
+    """Load word vocabulary from JSON file."""
+    with open(vocab_path, 'r') as f:
+        return json.load(f)
 
 
 # =============================================================================
@@ -105,6 +205,9 @@ class BEAT2PoseDataset(Dataset):
                  audio_dir: Optional[str] = None,
                  split: Optional[str] = None,
                  anchor_max_frames: int = 30,
+                 speaker: Optional[int] = None,
+                 load_text: bool = False,
+                 text_dir: Optional[str] = None,
                  # Legacy parameters (ignored, kept for backward compat)
                  sequence_length: int = 120,
                  stride: int = 30,
@@ -133,6 +236,8 @@ class BEAT2PoseDataset(Dataset):
         self.use_axis_angle = use_axis_angle
         self.split = split
         self.anchor_max_frames = anchor_max_frames
+        self.speaker = speaker
+        self.load_text = load_text
 
         # Determine the correct language folder
         lang_folders = {
@@ -147,6 +252,7 @@ class BEAT2PoseDataset(Dataset):
         self.pose_dir = os.path.join(self.lang_path, 'smplxflame_30')
         self.sem_dir = os.path.join(self.lang_path, 'sem')
         self.audio_dir = audio_dir or os.path.join(self.lang_path, 'wav2vec_30')
+        self.text_dir = text_dir or os.path.join(self.lang_path, 'bert_30')
 
         self.pose_files = sorted(glob.glob(os.path.join(self.pose_dir, '*.npz')))
 
@@ -188,6 +294,12 @@ class BEAT2PoseDataset(Dataset):
                 if allowed_basenames is not None and basename not in allowed_basenames:
                     continue
 
+                # Skip files not matching requested speaker
+                if self.speaker is not None:
+                    file_speaker = int(basename.split('_')[0])
+                    if file_speaker != self.speaker:
+                        continue
+
                 # Load poses
                 data = np.load(file_path)
                 if self.use_axis_angle:
@@ -206,10 +318,21 @@ class BEAT2PoseDataset(Dataset):
 
                 audio = np.load(audio_path)  # (T, 768)
 
+                # Load text features if enabled
+                text_features = None
+                if self.load_text:
+                    text_path = os.path.join(self.text_dir, f'{basename}.npy')
+                    if os.path.exists(text_path):
+                        text_features = np.load(text_path)  # (T, 768)
+
                 # Ensure audio and pose lengths match
                 min_len = min(total_frames, audio.shape[0])
+                if text_features is not None:
+                    min_len = min(min_len, text_features.shape[0])
                 poses = poses[:min_len]
                 audio = audio[:min_len]
+                if text_features is not None:
+                    text_features = text_features[:min_len]
                 total_frames = min_len
 
                 if total_frames < self.min_length:
@@ -229,7 +352,7 @@ class BEAT2PoseDataset(Dataset):
                 speaker_id = int(basename.split('_')[0])
 
                 file_idx = len(self.file_data)
-                self.file_data.append({
+                file_entry = {
                     'poses': poses.astype(np.float32),
                     'audio': audio.astype(np.float32),
                     'valid_regions': valid_regions,
@@ -237,12 +360,20 @@ class BEAT2PoseDataset(Dataset):
                     'audio_path': audio_path,
                     'pose_path': file_path,
                     'speaker_id': speaker_id,
-                })
+                }
+                if text_features is not None:
+                    file_entry['text'] = text_features.astype(np.float32)
+                self.file_data.append(file_entry)
 
-                # Build sample index: weight each region by its length / avg_clip_length
+                # Build sample index: weight each region so per-frame sampling rate is uniform
                 for region_idx, (start, end) in enumerate(valid_regions):
                     region_length = end - start
-                    num_samples = max(1, int(region_length / avg_clip_length))
+                    if region_length < self.min_length:
+                        continue
+                    # Expected clip length for THIS region (capped at region_length)
+                    max_clip = min(self.max_length, region_length)
+                    expected_clip = (self.min_length + max_clip) / 2.0
+                    num_samples = max(1, round(region_length / expected_clip))
                     for _ in range(num_samples):
                         self.sample_index.append((file_idx, region_idx))
 
@@ -273,12 +404,12 @@ class BEAT2PoseDataset(Dataset):
         # Extract clip
         poses = file_data['poses'][clip_start:clip_start + clip_length]
         audio = file_data['audio'][clip_start:clip_start + clip_length]
+        text = file_data.get('text')
+        if text is not None:
+            text = text[clip_start:clip_start + clip_length]
 
-        # Majority gesture type (tie -> semantic=1)
-        gesture_labels = file_data['gesture_labels'][clip_start:clip_start + clip_length]
-        semantic_count = np.sum(gesture_labels == 1)
-        beat_count = np.sum(gesture_labels == 0)
-        gesture_type = 1 if semantic_count >= beat_count else 0
+        # Region is homogeneous (split at gesture boundaries), use first frame's label
+        gesture_type = int(file_data['gesture_labels'][clip_start])
 
         # Extract anchor pool: up to anchor_max_frames preceding the clip
         K = self.anchor_max_frames
@@ -292,7 +423,7 @@ class BEAT2PoseDataset(Dataset):
             pad_audio = np.zeros((K - anchor_audio.shape[0], file_data['audio'].shape[-1]), dtype=np.float32)
             anchor_audio = np.concatenate([pad_audio, anchor_audio], axis=0)  # (K, 768)
 
-        return {
+        result = {
             'poses': torch.FloatTensor(poses),
             'audio': torch.FloatTensor(audio),
             'gesture_type': gesture_type,
@@ -304,6 +435,9 @@ class BEAT2PoseDataset(Dataset):
             'audio_path': file_data['audio_path'],
             'pose_path': file_data['pose_path'],
         }
+        if text is not None:
+            result['text'] = torch.FloatTensor(text)
+        return result
 
 
 # =============================================================================
@@ -360,6 +494,15 @@ def variable_length_collate_fn(batch):
         'audio_path': [item['audio_path'] for item in batch],
         'pose_path': [item['pose_path'] for item in batch],
     }
+
+    # Optional text features (pre-computed BERT embeddings)
+    if 'text' in batch[0]:
+        text_dim = batch[0]['text'].shape[-1]
+        padded_text = torch.zeros(batch_size, t_max, text_dim)
+        for i, item in enumerate(batch):
+            l = item['length']
+            padded_text[i, :l] = item['text']
+        data_dict['text'] = padded_text
 
     return data_dict, torch.zeros(batch_size)  # dummy label
 

@@ -85,6 +85,14 @@ def model_option_parser(model_type, conf_path):
         if 'free_bits' in model:
             options['free_bits'] = model.getfloat('free_bits')
 
+        # Temporal latent VAE
+        if 'temporal_downsample' in model:
+            options['temporal_downsample'] = model.getint('temporal_downsample')
+
+        # Text conditioning
+        if 'text_dim' in model:
+            options['text_dim'] = model.getint('text_dim')
+
         # Check for SMPLX parameters
         if 'use_smplx' in model:
             options['use_smplx'] = model.getboolean('use_smplx')

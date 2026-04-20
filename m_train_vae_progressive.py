@@ -14,6 +14,9 @@ BODY_PARTS_POSE = {
     'hands': (75, 165),        # Left hand (75-120) + right hand (120-165)
 }
 
+# Level index → body part name. Levels beyond this list use whole-body loss.
+LEVEL_TO_PART = ['face', 'body', 'hands']
+
 
 # ============================================================================
 # Helper Functions for Body Part Geometry Extraction
@@ -162,7 +165,7 @@ def compute_level_local_loss(level_output, gt_poses, pred_vertices, pred_joints,
     else:
         loss_dict[f'mesh_{part_name}'] = 0.0
 
-    # 3. Joint position loss on specific body part
+    # 4. Joint position loss on specific body part
     if pred_joints is not None and gt_joints is not None:
         _, pred_part_joints = extract_body_part_geometry(None, pred_joints, part_name)
         _, gt_part_joints = extract_body_part_geometry(None, gt_joints, part_name)
@@ -232,7 +235,7 @@ def compute_global_loss(final_output, gt_poses, pred_vertices, pred_joints,
     else:
         loss_dict['global_mesh'] = 0.0
 
-    # 3. Full joint reconstruction loss
+    # 4. Full joint reconstruction loss
     if pred_joints is not None and gt_joints is not None:
         if valid_mask_4d is not None:
             n_joints = pred_joints.shape[2]
@@ -255,13 +258,17 @@ def compute_global_loss(final_output, gt_poses, pred_vertices, pred_joints,
 def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, sampler,
                      optimizer, scheduler, device, dataset_name, run_num,
                      use_smplx_loss=False, pose_loss_weight=1.0, vertex_loss_weight=1.0, joint_loss_weight=1.0,
-                     level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
+                     level_weights=None,
                      level_loss_configs=None, kl_anneal_epochs=100, max_kl_weight=0.05,
                      vel_weight=1.0, cont_vel_weight=50.0,
                      anchor_recon_weight=0.1):
     """
     Progressive training with stop gradients between levels and global losses.
     Supports variable-length batches with audio and gesture type conditioning.
+
+    level_weights: list of per-level loss weights. Length should match n_level.
+                   Defaults to [1.0] * n_level. Levels 0-2 use body-part losses
+                   (face/body/hands); levels 3+ use whole-body losses.
     """
     loader = tqdm(loader)
 
@@ -271,25 +278,38 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
     else:
         latent_loss_weight = max_kl_weight
 
+    # Get model config
+    actual_model = model.module if hasattr(model, 'module') else model
+    n_levels = actual_model.n_level
+    latent_dim = actual_model.latent_dim
+    temporal_downsample = getattr(actual_model, 'temporal_downsample', 0)
+    smplx_layer = actual_model.smplx_layer if use_smplx_loss else None
+
+    import math
+    if temporal_downsample > 1:
+        kl_total_dims = math.ceil(150 / temporal_downsample) * latent_dim
+    else:
+        kl_total_dims = latent_dim
+
+    # Default level weights
+    if level_weights is None:
+        level_weights_used = [1.0] * n_levels
+    else:
+        level_weights_used = list(level_weights)
+        while len(level_weights_used) < n_levels:
+            level_weights_used.append(1.0)
+
     # Track losses
-    level_1_loss_sum = 0.0
-    level_2_loss_sum = 0.0
-    level_3_loss_sum = 0.0
+    level_loss_sums = [0.0] * n_levels
+    level_components_list = [{} for _ in range(n_levels)]
     global_loss_sum = 0.0
     kl_loss_sum = 0.0
     kl_raw_sum = 0.0
     total_loss_sum = 0.0
     grad_norm_sum = 0.0
-    kl_level_sums = [0.0, 0.0, 0.0]
-    level_1_components = {}
-    level_2_components = {}
-    level_3_components = {}
+    kl_level_sums = [0.0] * n_levels
     global_components = {}
     mse_n = 0
-
-    # Get latent_dim for KL/dim logging
-    actual_model = model.module if hasattr(model, 'module') else model
-    latent_dim = actual_model.latent_dim
 
     for i, (data, label) in enumerate(loader):
         model.zero_grad()
@@ -326,6 +346,10 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             if anchor_audio is not None:
                 anchor_audio = anchor_audio.to(device)
 
+            text_features = data.get('text', None)
+            if text_features is not None:
+                text_features = text_features.to(device)
+
             gt_joints = data.get('gt_joints', None)
             gt_vertices = data.get('gt_vertices', None)
             if gt_joints is not None:
@@ -341,6 +365,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
             audio = None
             anchor_pool = None
             anchor_audio = None
+            text_features = None
             gt_joints = None
             gt_vertices = None
 
@@ -349,7 +374,7 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
                       lengths=lengths, audio_features=audio,
                       compute_geometry=use_smplx_loss, return_intermediate=True,
                       anchor_pool=anchor_pool, speaker_id=speaker_id,
-                      anchor_audio=anchor_audio)
+                      anchor_audio=anchor_audio, text_features=text_features)
 
         if use_smplx_loss:
             intermediate_outputs, latent_loss, raw_kl, pred_vertices, pred_joints, kl_per_level = result
@@ -359,60 +384,57 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
 
         # Compute GT joints/vertices from GT poses if not provided by dataloader
         if use_smplx_loss and gt_joints is None:
-            smplx_layer = model.module.smplx_layer if hasattr(model, 'module') else model.smplx_layer
-            if smplx_layer is not None:
+            _smplx = actual_model.smplx_layer
+            if _smplx is not None:
                 with torch.no_grad():
-                    gt_vertices, gt_joints = smplx_layer(poses)
+                    gt_vertices, gt_joints = _smplx(poses)
 
-        level_1_output = intermediate_outputs[0]
-        level_2_output = intermediate_outputs[1]
-        level_3_output = intermediate_outputs[2]
+        # ==================== Per-Level Losses ====================
+        # Levels 0-2: body-part-specific (face, body, hands)
+        # Levels 3+: whole-body loss
+        level_local_losses = []
 
-        # ==================== Level 1 Loss ====================
-        level_1_detached = level_1_output
-        pred_verts_l1, pred_joints_l1 = None, None
-        if use_smplx_loss:
-            smplx_layer = model.module.smplx_layer if hasattr(model, 'module') else model.smplx_layer
-            if smplx_layer is not None:
-                pred_verts_l1, pred_joints_l1 = smplx_layer(level_1_detached)
+        for lvl_idx in range(n_levels):
+            lvl_output = intermediate_outputs[lvl_idx]
+            is_final = (lvl_idx == n_levels - 1)
 
-        level_1_local_loss, level_1_dict = compute_level_local_loss(
-            level_1_detached, poses, pred_verts_l1, pred_joints_l1,
-            gt_vertices, gt_joints, 'face', criterion, device,
-            padding_mask=padding_mask, vel_weight=vel_weight
-        )
+            if lvl_idx < len(LEVEL_TO_PART):
+                part_name = LEVEL_TO_PART[lvl_idx]
+                pred_verts_lvl, pred_joints_lvl = None, None
+                if use_smplx_loss and smplx_layer is not None:
+                    pred_verts_lvl, pred_joints_lvl = smplx_layer(lvl_output)
+                lvl_loss, lvl_dict = compute_level_local_loss(
+                    lvl_output, poses, pred_verts_lvl, pred_joints_lvl,
+                    gt_vertices, gt_joints, part_name, criterion, device,
+                    padding_mask=padding_mask, vel_weight=vel_weight
+                )
+            else:
+                # Whole-body loss for levels beyond face/body/hands
+                # For the final level, reuse pre-computed vertices/joints from forward pass
+                if is_final:
+                    pred_verts_lvl, pred_joints_lvl = pred_vertices, pred_joints
+                else:
+                    pred_verts_lvl, pred_joints_lvl = None, None
+                    if use_smplx_loss and smplx_layer is not None:
+                        pred_verts_lvl, pred_joints_lvl = smplx_layer(lvl_output)
+                lvl_loss, lvl_dict = compute_global_loss(
+                    lvl_output, poses, pred_verts_lvl, pred_joints_lvl,
+                    gt_vertices, gt_joints, criterion, device,
+                    pose_weight=pose_loss_weight,
+                    mesh_weight=vertex_loss_weight,
+                    joint_weight=joint_loss_weight,
+                    padding_mask=padding_mask,
+                    vel_weight=vel_weight
+                )
 
-        # ==================== Level 2 Loss ====================
-        level_2_detached = level_2_output
-        pred_verts_l2, pred_joints_l2 = None, None
-        if use_smplx_loss:
-            smplx_layer = model.module.smplx_layer if hasattr(model, 'module') else model.smplx_layer
-            if smplx_layer is not None:
-                pred_verts_l2, pred_joints_l2 = smplx_layer(level_2_detached)
-
-        level_2_local_loss, level_2_dict = compute_level_local_loss(
-            level_2_detached, poses, pred_verts_l2, pred_joints_l2,
-            gt_vertices, gt_joints, 'body', criterion, device,
-            padding_mask=padding_mask, vel_weight=vel_weight
-        )
-
-        # ==================== Level 3 Loss ====================
-        level_3_detached = level_3_output
-        pred_verts_l3, pred_joints_l3 = None, None
-        if use_smplx_loss:
-            smplx_layer = model.module.smplx_layer if hasattr(model, 'module') else model.smplx_layer
-            if smplx_layer is not None:
-                pred_verts_l3, pred_joints_l3 = smplx_layer(level_3_detached)
-
-        level_3_local_loss, level_3_dict = compute_level_local_loss(
-            level_3_detached, poses, pred_verts_l3, pred_joints_l3,
-            gt_vertices, gt_joints, 'hands', criterion, device,
-            padding_mask=padding_mask, vel_weight=vel_weight
-        )
+            level_local_losses.append(lvl_loss)
+            # Accumulate components
+            for k, v in lvl_dict.items():
+                level_components_list[lvl_idx][k] = level_components_list[lvl_idx].get(k, 0.0) + v * poses.shape[0]
 
         # ==================== Global Loss (BACKPROP THROUGH ALL) ====================
         global_loss, global_dict = compute_global_loss(
-            level_3_output, poses, pred_vertices, pred_joints,
+            intermediate_outputs[-1], poses, pred_vertices, pred_joints,
             gt_vertices, gt_joints, criterion, device,
             pose_weight=pose_loss_weight,
             mesh_weight=vertex_loss_weight,
@@ -422,33 +444,31 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
         )
 
         # ==================== Continuation Velocity Loss ====================
-        # Penalise discontinuity at anchor → first generated frame boundary
-        actual_model = model.module if hasattr(model, 'module') else model
         used_anchor_frames = actual_model.get_last_anchor_frames()
         cont_vel_loss = torch.tensor(0.0, device=device)
         if used_anchor_frames is not None and anchor_pool is not None and cont_vel_weight > 0:
             cont_vel_loss = _continuation_velocity_loss(
-                level_3_output, poses, used_anchor_frames, anchor_pool)
+                intermediate_outputs[-1], poses, used_anchor_frames, anchor_pool)
         global_dict['cont_vel'] = cont_vel_loss.item()
 
         # ==================== Anchor Reconstruction Loss ====================
-        # Ensure decoder maintains meaningful representations at anchor positions
         anchor_recon = actual_model.get_last_anchor_recon()
         anchor_recon_loss = torch.tensor(0.0, device=device)
         if anchor_recon is not None and anchor_pool is not None and anchor_recon_weight > 0:
-            # anchor_recon: (B, K, C), anchor_pool last K frames: (B, K_max, C)
             K_recon = anchor_recon.shape[1]
-            anchor_gt = anchor_pool[:, -K_recon:, :]  # match the K frames used
+            anchor_gt = anchor_pool[:, -K_recon:, :]
             anchor_recon_loss = F.mse_loss(anchor_recon, anchor_gt)
         global_dict['anchor_recon'] = anchor_recon_loss.item()
 
         # ==================== Combine All Losses ====================
         latent_loss = latent_loss.mean()
+        raw_kl = raw_kl.mean()
+        if kl_per_level is not None:
+            kl_per_level = [k.mean() for k in kl_per_level]
 
+        weighted_level_loss = sum(level_weights_used[i] * level_local_losses[i] for i in range(n_levels))
         total_loss = (
-            level_1_weight * level_1_local_loss +
-            level_2_weight * level_2_local_loss +
-            level_3_weight * level_3_local_loss +
+            weighted_level_loss +
             global_loss +
             cont_vel_weight * cont_vel_loss +
             anchor_recon_weight * anchor_recon_loss +
@@ -466,9 +486,8 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
 
         # ==================== Track Metrics ====================
         batch_size = poses.shape[0]
-        level_1_loss_sum += level_1_local_loss.item() * batch_size
-        level_2_loss_sum += level_2_local_loss.item() * batch_size
-        level_3_loss_sum += level_3_local_loss.item() * batch_size
+        for lvl_idx in range(n_levels):
+            level_loss_sums[lvl_idx] += level_local_losses[lvl_idx].item() * batch_size
         global_loss_sum += global_loss.item() * batch_size
         kl_loss_sum += latent_loss.item() * batch_size
         kl_raw_sum += raw_kl.item() * batch_size
@@ -476,71 +495,59 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
         grad_norm_sum += grad_norm.item() * batch_size
         if kl_per_level is not None:
             for lvl_idx, kl_lvl in enumerate(kl_per_level):
-                kl_level_sums[lvl_idx] += kl_lvl.item() * batch_size
+                if lvl_idx < len(kl_level_sums):
+                    kl_level_sums[lvl_idx] += kl_lvl.item() * batch_size
         mse_n += batch_size
 
-        for k, v in level_1_dict.items():
-            level_1_components[k] = level_1_components.get(k, 0.0) + v * batch_size
-        for k, v in level_2_dict.items():
-            level_2_components[k] = level_2_components.get(k, 0.0) + v * batch_size
-        for k, v in level_3_dict.items():
-            level_3_components[k] = level_3_components.get(k, 0.0) + v * batch_size
         for k, v in global_dict.items():
             global_components[k] = global_components.get(k, 0.0) + v * batch_size
 
         # ==================== Progress Bar ====================
         lr = optimizer.param_groups[0]['lr']
-        avg_l1 = level_1_loss_sum / mse_n
-        avg_l2 = level_2_loss_sum / mse_n
-        avg_l3 = level_3_loss_sum / mse_n
+        avg_levels = [level_loss_sums[i] / mse_n for i in range(n_levels)]
         avg_global = global_loss_sum / mse_n
-        avg_kl_loss = kl_loss_sum / mse_n
         avg_kl_raw = kl_raw_sum / mse_n
         avg_total = total_loss_sum / mse_n
         avg_grad_norm = grad_norm_sum / mse_n
-        avg_kl_per_dim = avg_kl_raw / latent_dim
+        avg_kl_per_dim = avg_kl_raw / kl_total_dims
         avg_global_vel = global_components.get('global_vel', 0.0) / max(mse_n, 1)
         avg_cont_vel = global_components.get('cont_vel', 0.0) / max(mse_n, 1)
 
+        level_str = '; '.join(f'L{i+1}: {avg_levels[i]:.4f}' for i in range(n_levels))
+        kl_levels_str = ','.join(f'{kl_level_sums[i]/max(mse_n,1):.0f}' for i in range(n_levels))
         desc = (
             f'epoch: {epoch_num + 1}; '
-            f'L1: {avg_l1:.4f}; '
-            f'L2: {avg_l2:.4f}; '
-            f'L3: {avg_l3:.4f}; '
+            f'{level_str}; '
             f'G: {avg_global:.4f}; '
             f'Vel: {avg_global_vel:.4f}; '
             f'CVel: {avg_cont_vel:.4f}; '
             f'KL: {avg_kl_raw:.1f}({avg_kl_per_dim:.2f}/d); '
-            f'KL[{kl_level_sums[0]/max(mse_n,1):.0f},{kl_level_sums[1]/max(mse_n,1):.0f},{kl_level_sums[2]/max(mse_n,1):.0f}]; '
+            f'KL[{kl_levels_str}]; '
             f'|g|: {avg_grad_norm:.2f}; '
             f'lr: {lr:.2e}'
         )
         loader.set_description(desc)
 
-    # ==================== TensorBoard Logging ====================
-    writer.add_scalar('Loss/total', total_loss_sum / mse_n, epoch_num)
-    writer.add_scalar('Loss/level_1_total', level_1_loss_sum / mse_n, epoch_num)
-    writer.add_scalar('Loss/level_2_total', level_2_loss_sum / mse_n, epoch_num)
-    writer.add_scalar('Loss/level_3_total', level_3_loss_sum / mse_n, epoch_num)
-    writer.add_scalar('Loss/global_total', global_loss_sum / mse_n, epoch_num)
-    writer.add_scalar('Loss/kl_raw', kl_raw_sum / mse_n, epoch_num)
-    writer.add_scalar('Loss/kl_per_dim', kl_raw_sum / mse_n / latent_dim, epoch_num)
-    writer.add_scalar('Loss/kl_loss', kl_loss_sum / mse_n, epoch_num)
-    writer.add_scalar('Loss/kl_weighted', latent_loss_weight * kl_loss_sum / mse_n, epoch_num)
-    writer.add_scalar('Loss/kl_weight', latent_loss_weight, epoch_num)
-    writer.add_scalar('Loss/kl_level_1', kl_level_sums[0] / mse_n, epoch_num)
-    writer.add_scalar('Loss/kl_level_2', kl_level_sums[1] / mse_n, epoch_num)
-    writer.add_scalar('Loss/kl_level_3', kl_level_sums[2] / mse_n, epoch_num)
-    writer.add_scalar('Train/grad_norm', grad_norm_sum / mse_n, epoch_num)
+    # ==================== TensorBoard Logging (rank 0 only) ====================
+    if writer is not None:
+        writer.add_scalar('Loss/total', total_loss_sum / mse_n, epoch_num)
+        for i in range(n_levels):
+            writer.add_scalar(f'Loss/level_{i+1}_total', level_loss_sums[i] / mse_n, epoch_num)
+        writer.add_scalar('Loss/global_total', global_loss_sum / mse_n, epoch_num)
+        writer.add_scalar('Loss/kl_raw', kl_raw_sum / mse_n, epoch_num)
+        writer.add_scalar('Loss/kl_per_dim', kl_raw_sum / mse_n / kl_total_dims, epoch_num)
+        writer.add_scalar('Loss/kl_loss', kl_loss_sum / mse_n, epoch_num)
+        writer.add_scalar('Loss/kl_weighted', latent_loss_weight * kl_loss_sum / mse_n, epoch_num)
+        writer.add_scalar('Loss/kl_weight', latent_loss_weight, epoch_num)
+        for i in range(n_levels):
+            writer.add_scalar(f'Loss/kl_level_{i+1}', kl_level_sums[i] / mse_n, epoch_num)
+        writer.add_scalar('Train/grad_norm', grad_norm_sum / mse_n, epoch_num)
 
-    for k, v in level_1_components.items():
-        writer.add_scalar(f'Loss/level_1_{k}', v / mse_n, epoch_num)
-    for k, v in level_2_components.items():
-        writer.add_scalar(f'Loss/level_2_{k}', v / mse_n, epoch_num)
-    for k, v in level_3_components.items():
-        writer.add_scalar(f'Loss/level_3_{k}', v / mse_n, epoch_num)
-    for k, v in global_components.items():
-        writer.add_scalar(f'Loss/{k}', v / mse_n, epoch_num)
+        for i in range(n_levels):
+            for k, v in level_components_list[i].items():
+                writer.add_scalar(f'Loss/level_{i+1}_{k}', v / mse_n, epoch_num)
+        for k, v in global_components.items():
+            writer.add_scalar(f'Loss/{k}', v / mse_n, epoch_num)
 
     # Sample if needed
     if do_sample:
@@ -551,26 +558,19 @@ def train_progressive(folder_name, epoch_num, loader, model, writer, do_sample, 
     # Build metrics dict for CSV logging
     metrics = {
         'total': total_loss_sum / mse_n,
-        'level_1': level_1_loss_sum / mse_n,
-        'level_2': level_2_loss_sum / mse_n,
-        'level_3': level_3_loss_sum / mse_n,
         'global': global_loss_sum / mse_n,
         'kl_raw': kl_raw_sum / mse_n,
-        'kl_per_dim': kl_raw_sum / mse_n / latent_dim,
+        'kl_per_dim': kl_raw_sum / mse_n / kl_total_dims,
         'kl_loss': kl_loss_sum / mse_n,
         'kl_weight': latent_loss_weight,
-        'kl_level_1': kl_level_sums[0] / mse_n,
-        'kl_level_2': kl_level_sums[1] / mse_n,
-        'kl_level_3': kl_level_sums[2] / mse_n,
         'grad_norm': grad_norm_sum / mse_n,
         'lr': optimizer.param_groups[0]['lr'],
     }
-    for k, v in level_1_components.items():
-        metrics[f'level_1_{k}'] = v / mse_n
-    for k, v in level_2_components.items():
-        metrics[f'level_2_{k}'] = v / mse_n
-    for k, v in level_3_components.items():
-        metrics[f'level_3_{k}'] = v / mse_n
+    for i in range(n_levels):
+        metrics[f'level_{i+1}'] = level_loss_sums[i] / mse_n
+        metrics[f'kl_level_{i+1}'] = kl_level_sums[i] / mse_n
+        for k, v in level_components_list[i].items():
+            metrics[f'level_{i+1}_{k}'] = v / mse_n
     for k, v in global_components.items():
         metrics[k] = v / mse_n
 

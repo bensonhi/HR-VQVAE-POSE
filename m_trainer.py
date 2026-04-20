@@ -99,27 +99,43 @@ def get_scheduler(lr, epoch, sched, optimizer, loader):
 
 def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, start_epoch=-1,
           end_epoch=-1, batch_size=-1, sched=None, device='cuda', size=256, lr=-1, amp=None,
-          use_progressive=False, level_1_weight=1.0, level_2_weight=1.0, level_3_weight=1.0,
+          use_progressive=False, level_weights=None,
           patience=-1, kl_anneal_epochs=100, max_kl_weight=0.05, val_loader=None,
           vel_weight=1.0, cont_vel_weight=50.0,
-          anchor_recon_weight=0.1):
+          anchor_recon_weight=0.1,
+          reset_best=False,
+          rank=0, local_rank=0, world_size=1):
 
     model_type = get_model_type(folder_name)
     _, train_params = conf_parser(dataset_name, n_run, folder_name)
     model = model_object_parser(dataset_name, n_run, folder_name)
     model = model.to(device)
     args = {}
+    _loaded_ckpt = None
     if start_epoch > 0:
         ckpt_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=start_epoch - 1)
         if os.path.exists(ckpt_path):
             print(f"Loading checkpoint: {ckpt_path}")
-            state_dict = torch.load(ckpt_path, map_location=device)
+            _loaded_ckpt = torch.load(ckpt_path, map_location=device)
+            # Support both old format (plain state_dict) and new format (dict with 'model' key)
+            state_dict = _loaded_ckpt['model'] if isinstance(_loaded_ckpt, dict) and 'model' in _loaded_ckpt else _loaded_ckpt
             # Strip 'module.' prefix if present (saved from DataParallel)
             new_state_dict = {}
             for k, v in state_dict.items():
                 new_key = k[len('module.'):] if k.startswith('module.') else k
                 new_state_dict[new_key] = v
-            model.load_state_dict(new_state_dict)
+            # Filter out keys with shape mismatches (e.g. SMPLX betas/expression)
+            model_state = model.state_dict()
+            filtered = {}
+            skipped = []
+            for k, v in new_state_dict.items():
+                if k in model_state and model_state[k].shape != v.shape:
+                    skipped.append(k)
+                else:
+                    filtered[k] = v
+            if skipped:
+                print(f"  Skipped {len(skipped)} keys with shape mismatch: {skipped[:3]}...")
+            model.load_state_dict(filtered, strict=False)
             print(f"Loaded checkpoint from epoch {start_epoch - 1}")
         else:
             print(f"Checkpoint not found: {ckpt_path}")
@@ -141,12 +157,17 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
     args['amp'] = amp
 
     optimizer = get_optimizer(model, lr)
+    if isinstance(_loaded_ckpt, dict) and 'optimizer' in _loaded_ckpt:
+        optimizer.load_state_dict(_loaded_ckpt['optimizer'])
+        print("Restored optimizer state from checkpoint")
 
-    model = nn.DataParallel(model)
-    model = model.to(device)
+    if world_size > 1:
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], find_unused_parameters=True)
+    else:
+        model = nn.DataParallel(model)
     sample_iter = 0
     folder_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=0)[:-6]
-    writer = SummaryWriter(log_dir=folder_path+'{}_{}'.format(*[start_epoch, end_epoch]))
+    writer = SummaryWriter(log_dir=folder_path+'{}_{}'.format(*[start_epoch, end_epoch])) if rank == 0 else None
 
     if model_type == VAE:
         scheduler = get_scheduler(lr, end_epoch - start_epoch, sched, optimizer, loader)
@@ -158,11 +179,15 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
         cosine_scheduler = CosineAnnealingLR(optimizer, T_max=max(1, end_epoch - warmup_epochs), eta_min=1e-5)
         combined_scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs])
 
-        # Fast-forward LR scheduler if resuming
+        # Restore or fast-forward LR scheduler
         if start_epoch > 0:
-            for _ in range(start_epoch):
-                combined_scheduler.step()
-            print(f"LR scheduler fast-forwarded to epoch {start_epoch} (lr={optimizer.param_groups[0]['lr']:.6f})")
+            if isinstance(_loaded_ckpt, dict) and 'scheduler' in _loaded_ckpt:
+                combined_scheduler.load_state_dict(_loaded_ckpt['scheduler'])
+                print(f"Restored scheduler state from checkpoint (lr={optimizer.param_groups[0]['lr']:.6f})")
+            else:
+                for _ in range(start_epoch):
+                    combined_scheduler.step()
+                print(f"LR scheduler fast-forwarded to epoch {start_epoch} (lr={optimizer.param_groups[0]['lr']:.6f})")
 
         # Check if model has SMPLX capability
         use_smplx_loss = False
@@ -207,7 +232,11 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                         loss_val = float(row.get('total', float('inf')))
                     if loss_val < best_loss:
                         best_loss = loss_val
-                print(f"Restored best_loss={best_loss:.6f} from existing log ({len(existing_rows)} epochs)")
+                if reset_best:
+                    print(f"Reset best_loss to inf (was {best_loss:.6f} from log)")
+                    best_loss = float('inf')
+                else:
+                    print(f"Restored best_loss={best_loss:.6f} from existing log ({len(existing_rows)} epochs)")
 
         for i in range(start_epoch, end_epoch):
             sample_iter += 1
@@ -220,9 +249,7 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
                                 pose_loss_weight=1.0,
                                 vertex_loss_weight=5.0,
                                 joint_loss_weight=3.0,
-                                level_1_weight=level_1_weight,
-                                level_2_weight=level_2_weight,
-                                level_3_weight=level_3_weight,
+                                level_weights=level_weights,
                                 kl_anneal_epochs=kl_anneal_epochs,
                                 max_kl_weight=max_kl_weight,
                                 vel_weight=vel_weight,
@@ -243,69 +270,79 @@ def train(folder_name, loader, dataset_name, n_run, sample_period, sampler, star
             # Early stopping check (only after KL annealing is complete)
             kl_annealing_done = (i + 1) >= kl_anneal_epochs
 
-            # Compute val loss if val_loader is provided and KL annealing is done
-            val_loss = None
-            if val_loader is not None and kl_annealing_done:
-                val_loss = validate_epoch(model, val_loader, device)
-                writer.add_scalar('Loss/val_recon', val_loss, i)
-                print(f"  Epoch {i+1}: train_loss={epoch_loss:.6f}, val_loss={val_loss:.6f}")
+            # ===== Rank 0 only: validation, logging, checkpoints =====
+            if rank == 0:
+                # Compute val loss if val_loader is provided and KL annealing is done
+                val_loss = None
+                if val_loader is not None and kl_annealing_done:
+                    val_loss = validate_epoch(model, val_loader, device)
+                    writer.add_scalar('Loss/val_recon', val_loss, i)
+                    print(f"  Epoch {i+1}: train_loss={epoch_loss:.6f}, val_loss={val_loss:.6f}")
 
-            # ===== Write CSV loss log =====
-            epoch_metrics['epoch'] = i + 1
-            epoch_metrics['val_loss'] = val_loss if val_loss is not None else ''
-            if not loss_log_header_written:
-                # First epoch: overwrite file with header
-                # Put epoch first, then sorted keys for consistent column order
-                all_keys = ['epoch'] + sorted(k for k in epoch_metrics if k != 'epoch')
-                with open(loss_log_path, 'w', newline='') as f:
-                    writer_csv = csv.DictWriter(f, fieldnames=all_keys)
-                    writer_csv.writeheader()
-                    writer_csv.writerow(epoch_metrics)
-                loss_log_header_written = True
-                loss_log_keys = all_keys
-            else:
-                with open(loss_log_path, 'a', newline='') as f:
-                    writer_csv = csv.DictWriter(f, fieldnames=loss_log_keys)
-                    writer_csv.writerow(epoch_metrics)
-
-            if kl_annealing_done:
-                # Use val loss for early stopping if available, otherwise train loss
-                stop_loss = val_loss if val_loss is not None else epoch_loss
-                is_best = stop_loss < best_loss
-                if is_best:
-                    best_loss = stop_loss
-                    epochs_without_improvement = 0
-                    if early_stop_enabled:
-                        best_model_state = model.state_dict()
-                        print(f"  New best loss: {best_loss:.6f}")
+                # ===== Write CSV loss log =====
+                epoch_metrics['epoch'] = i + 1
+                epoch_metrics['val_loss'] = val_loss if val_loss is not None else ''
+                if not loss_log_header_written:
+                    all_keys = ['epoch'] + sorted(k for k in epoch_metrics if k != 'epoch')
+                    with open(loss_log_path, 'w', newline='') as f:
+                        writer_csv = csv.DictWriter(f, fieldnames=all_keys)
+                        writer_csv.writeheader()
+                        writer_csv.writerow(epoch_metrics)
+                    loss_log_header_written = True
+                    loss_log_keys = all_keys
                 else:
-                    epochs_without_improvement += 1
-            else:
-                is_best = True  # always save as "best" during annealing
+                    with open(loss_log_path, 'a', newline='') as f:
+                        writer_csv = csv.DictWriter(f, fieldnames=loss_log_keys)
+                        writer_csv.writerow(epoch_metrics)
 
-            # Save checkpoint
-            save_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
-            torch.save(model.state_dict(), save_path)
+                if kl_annealing_done:
+                    stop_loss = val_loss if val_loss is not None else epoch_loss
+                    is_best = stop_loss < best_loss
+                    if is_best:
+                        best_loss = stop_loss
+                        epochs_without_improvement = 0
+                        if early_stop_enabled:
+                            best_model_state = model.state_dict()
+                            print(f"  New best loss: {best_loss:.6f}")
+                    else:
+                        epochs_without_improvement += 1
+                else:
+                    is_best = True
 
-            # Save best checkpoint
-            if is_best:
-                best_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint='best')
-                torch.save(model.state_dict(), best_path)
+                # Save checkpoint
+                save_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
+                torch.save({
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': combined_scheduler.state_dict(),
+                }, save_path)
 
-            # Step the LR scheduler (warmup → cosine)
+                if is_best:
+                    best_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint='best')
+                    torch.save({
+                        'model': model.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'scheduler': combined_scheduler.state_dict(),
+                    }, best_path)
+
+            # Step the LR scheduler (warmup → cosine) — all ranks
             combined_scheduler.step()
 
-            # Check if should stop early (only possible after KL annealing)
-            if early_stop_enabled and kl_annealing_done and epochs_without_improvement >= patience:
+            # Check if should stop early (only rank 0 tracks, broadcast via file existence)
+            if rank == 0 and early_stop_enabled and kl_annealing_done and epochs_without_improvement >= patience:
                 print(f"\nEarly stopping triggered after epoch {i+1}")
                 print(f"   No improvement for {patience} epochs (counting started at epoch {kl_anneal_epochs})")
                 print(f"   Best loss: {best_loss:.6f} at epoch {i+1-epochs_without_improvement}")
                 if best_model_state is not None:
                     model.load_state_dict(best_model_state)
-                    # Save final best model
                     final_path = get_path(dataset_name, n_run, folder_name, 'ckpt', checkpoint=i)
-                    torch.save(model.state_dict(), final_path)
+                    torch.save({
+                        'model': model.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'scheduler': combined_scheduler.state_dict(),
+                    }, final_path)
                     print(f"   Restored and saved best model to {final_path}")
                 break
 
-        writer.close()
+        if writer is not None:
+            writer.close()
