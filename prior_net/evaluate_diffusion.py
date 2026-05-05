@@ -97,6 +97,8 @@ def main():
                         help='Use per-body-part velocity scaling based on measured GT/gen ratios')
     parser.add_argument('--output', type=str, default=None)
     parser.add_argument('--text-dir', type=str, default=None, help='Directory with pre-computed text embeddings (.npy). Auto-detected from checkpoint args if not set.')
+    parser.add_argument('--split', type=str, default='test', choices=['test', 'val', 'train'],
+                        help='Which split to evaluate on (default: test). Use val for guidance sweep.')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -175,7 +177,7 @@ def main():
     smplx_layer.to(device)
 
     # Test files
-    test_files = get_test_files(args.data_root, args.language, args.test_fraction, args.seed, speaker=args.speaker)
+    test_files = get_test_files(args.data_root, args.language, args.test_fraction, args.seed, speaker=args.speaker, split=args.split)
     print(f"Test files: {len(test_files)}")
 
     # Metrics

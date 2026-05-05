@@ -210,7 +210,7 @@ def validate_fgd_autoregressive(diff_model, vae_model, device,
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
 
-    all_test_files = get_test_files(data_root, language, test_fraction, seed, speaker=speaker)
+    all_test_files = get_test_files(data_root, language, test_fraction, seed, speaker=speaker, split='val')
     # Distribute files across ranks (each rank handles its slice)
     my_files = all_test_files[rank::world_size]
 
@@ -329,8 +329,8 @@ def main():
     parser.add_argument('--text-dim', type=int, default=0, help='Text embedding dim (768 for BERT, 0 to disable)')
     parser.add_argument('--text-dir', type=str, default=None, help='Path to BERT text features (e.g. BEAT2/beat_english_v2.0.0/bert_30)')
     # Autoreg FGD validation
-    parser.add_argument('--val-autoreg-every', type=int, default=5, help='Run autoreg FGD validation every N epochs (0 to disable)')
-    parser.add_argument('--val-autoreg-fraction', type=float, default=0.1, help='Fraction of test files for autoreg FGD')
+    parser.add_argument('--val-autoreg-every', type=int, default=5, help='Run autoreg FGD on val split every N epochs (0 to disable)')
+    parser.add_argument('--val-autoreg-fraction', type=float, default=1.0, help='Fraction of val files for autoreg FGD')
     parser.add_argument('--val-autoreg-guidance', type=float, default=0.5, help='Guidance scale for autoreg FGD validation')
     args = parser.parse_args()
 

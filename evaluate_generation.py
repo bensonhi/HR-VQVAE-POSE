@@ -79,12 +79,13 @@ def axis_angle_to_rot6d(axis_angle):
 # Test file listing
 # ============================================================================
 
-def get_test_files(data_root='BEAT2', language='english', fraction=0.1, seed=42, speaker=None):
-    """Get test pose file paths, subsampled by fraction.
+def get_test_files(data_root='BEAT2', language='english', fraction=0.1, seed=42, speaker=None, split='test'):
+    """Get pose file paths for a given split, subsampled by fraction.
 
     Args:
-        speaker: If set (e.g. 2), only include test files from that speaker.
+        speaker: If set (e.g. 2), only include files from that speaker.
                  Standard BEAT2 protocol uses speaker=2.
+        split: Which split to use: 'test' (default), 'val', or 'train'.
     """
     lang_folders = {'english': 'beat_english_v2.0.0'}
     lang_folder = lang_folders.get(language, f'beat_{language}_v2.0.0')
@@ -95,7 +96,7 @@ def get_test_files(data_root='BEAT2', language='english', fraction=0.1, seed=42,
     with open(csv_path, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if row['type'] == 'test':
+            if row['type'] == split:
                 if speaker is not None and int(row['id'].split('_')[0]) != speaker:
                     continue
                 test_ids.append(row['id'])

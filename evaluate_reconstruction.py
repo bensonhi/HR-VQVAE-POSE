@@ -52,6 +52,7 @@ from generate_autoregressive_v2 import (
 from m_util import conf_parser, create_model_object, get_model_type, load_checkpoint
 from m_smplx_layer import SMPLXLayer
 from emage_evaltools.mertic import FGD, BC, L1div, LVDFace, MSEFace
+from evaluate_generation import get_test_files as _get_test_files_with_split
 
 
 # ============================================================================
@@ -91,39 +92,8 @@ def axis_angle_to_rot6d(axis_angle):
 # Test file listing (same as evaluate_generation.py)
 # ============================================================================
 
-def get_test_files(data_root='BEAT2', language='english', fraction=0.1, seed=42, speaker=None):
-    """Get test pose file paths, subsampled by fraction.
-
-    Args:
-        speaker: If set (e.g. 2), only include test files from that speaker.
-                 Standard BEAT2 protocol uses speaker=2.
-    """
-    lang_folders = {'english': 'beat_english_v2.0.0'}
-    lang_folder = lang_folders.get(language, f'beat_{language}_v2.0.0')
-    lang_path = os.path.join(data_root, lang_folder)
-
-    csv_path = os.path.join(lang_path, 'train_test_split.csv')
-    test_ids = []
-    with open(csv_path, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row['type'] == 'test':
-                if speaker is not None and int(row['id'].split('_')[0]) != speaker:
-                    continue
-                test_ids.append(row['id'])
-
-    rng = random.Random(seed)
-    rng.shuffle(test_ids)
-    n = max(1, int(len(test_ids) * fraction))
-    selected = sorted(test_ids[:n])
-
-    paths = []
-    for tid in selected:
-        p = os.path.join(lang_path, 'smplxflame_30', f'{tid}.npz')
-        if os.path.exists(p):
-            paths.append(p)
-
-    return paths
+def get_test_files(data_root='BEAT2', language='english', fraction=0.1, seed=42, speaker=None, split='test'):
+    return _get_test_files_with_split(data_root, language, fraction, seed, speaker=speaker, split=split)
 
 
 # ============================================================================
@@ -358,6 +328,8 @@ def main():
     parser.add_argument('--language', type=str, default='english')
     parser.add_argument('--speaker', type=int, default=None,
                         help='Evaluate only this speaker (default: all). Standard BEAT2 protocol uses --speaker 2')
+    parser.add_argument('--split', type=str, default='test', choices=['test', 'val', 'train'],
+                        help='Which split to evaluate on (default: test)')
     parser.add_argument('--output', type=str, default=None,
                         help='Output JSON path (default: next to checkpoint)')
     args = parser.parse_args()
@@ -389,9 +361,10 @@ def main():
 
     # ---- Get test files ----
     test_files = get_test_files(
-        args.data_root, args.language, args.test_fraction, args.seed, speaker=args.speaker)
+        args.data_root, args.language, args.test_fraction, args.seed,
+        speaker=args.speaker, split=args.split)
     print(f"\nTest files: {len(test_files)} "
-          f"({args.test_fraction*100:.0f}% of test set)")
+          f"({args.test_fraction*100:.0f}% of {args.split} set)")
 
     # ---- Initialize metrics ----
     fgd_evaluator = FGD(download_path='./emage_evaltools/', device=str(device))
@@ -408,6 +381,17 @@ def main():
     mse_count = 0
     mpjpe_sum = 0.0
     mpjpe_frames = 0
+
+    # Per-level MPJPE: SMPLX joint layout (first 55 joints)
+    # body: 0:22, face: 22:25, left_hand: 25:40, right_hand: 40:55
+    LEVEL_JOINTS = {
+        'body':       (0, 22),
+        'face':       (22, 25),
+        'left_hand':  (25, 40),
+        'right_hand': (40, 55),
+    }
+    mpjpe_level_sum = {k: 0.0 for k in LEVEL_JOINTS}
+    mpjpe_level_frames = {k: 0 for k in LEVEL_JOINTS}
 
     per_recording = []
 
@@ -527,6 +511,12 @@ def main():
         mpjpe_sum += per_joint_err.sum().item()
         mpjpe_frames += T * n_joints
 
+        # --- Per-level MPJPE ---
+        for lvl, (j0, j1) in LEVEL_JOINTS.items():
+            lvl_err = torch.norm(gen_joints[:, j0:j1, :] - gt_joints[:, j0:j1, :], dim=-1)
+            mpjpe_level_sum[lvl] += lvl_err.sum().item()
+            mpjpe_level_frames[lvl] += T * (j1 - j0)
+
         # --- Per-recording velocity ---
         gen_vel = torch.norm(
             gen_joints[1:] - gen_joints[:-1], dim=-1).mean().item()
@@ -584,6 +574,11 @@ def main():
     mpjpe = (mpjpe_sum / mpjpe_frames) * 1000 if mpjpe_frames > 0 else 0
     metrics['MPJPE_mm'] = round(mpjpe, 2)
 
+    # Per-level MPJPE
+    for lvl in LEVEL_JOINTS:
+        lvl_mpjpe = (mpjpe_level_sum[lvl] / mpjpe_level_frames[lvl]) * 1000 if mpjpe_level_frames[lvl] > 0 else 0
+        metrics[f'MPJPE_{lvl}_mm'] = round(lvl_mpjpe, 2)
+
     # Mean velocity
     if per_recording:
         mean_gen_vel = np.mean([r['gen_vel'] for r in per_recording])
@@ -602,6 +597,8 @@ def main():
     print(f"  MSEFace:  {metrics['MSEFace']:.2e}  (lower=better)")
     print(f"  MSE:      {metrics['MSE']:.2e}  (lower=better)")
     print(f"  MPJPE:    {metrics['MPJPE_mm']:.2f} mm  (lower=better)")
+    for lvl in LEVEL_JOINTS:
+        print(f"    MPJPE_{lvl}: {metrics[f'MPJPE_{lvl}_mm']:.2f} mm")
     print(f"  Velocity: gen={metrics.get('mean_vel_gen', 0):.4f}  "
           f"gt={metrics.get('mean_vel_gt', 0):.4f}")
     print(f"{'='*60}")
