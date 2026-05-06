@@ -190,6 +190,31 @@ Uses encoder mu (deterministic) instead of sampled z. Autoregressive with decode
 
 ---
 
+## Ablation Study (spk2 test set, 5 seeds, g=0.5)
+
+### What was tested
+Two component ablations on the full model (E2E perceptual spk2 FT, `vae_lean_dec_spk2`):
+
+| Ablation | How it was run |
+|---|---|
+| **w/o anchor prefix** | `prior_net/evaluate_diffusion.py --anchor-frames 0` — sets `anchor_k=0` in `generate_autoregressive_with_diffusion`, disabling anchor frames for both the VAE decoder and the prior's conditioning |
+| **w/o flow-matching prior** | `evaluate_generation.py` directly — uses `generate_autoregressive` which samples z ~ N(0, I) without any diffusion prior |
+
+### Results
+
+| Model | FGD ↓ | BC ↑ | L1Div ↑ |
+|---|---|---|---|
+| **Full model** | **0.4374 ± 0.0067** | 0.6944 ± 0.0060 | 14.85 ± 0.25 |
+| w/o anchor prefix | 0.5183 ± 0.0113 | 0.6721 ± 0.0056 | 14.77 ± 0.13 |
+| w/o flow-matching prior (z ~ N(0,I)) | 0.7384 ± 0.0072 | 0.7681 ± 0.0025 | 9.94 ± 0.06 |
+
+### Observations
+- **Anchor prefix** contributes +0.08 FGD (18% degradation) — important for temporal coherence across autoregressive chunks
+- **Flow-matching prior** contributes +0.30 FGD (69% degradation) — the dominant component; without it the model outputs incoherent random-z motions
+- BC for no-prior is *higher* than the full model — random z produces over-animated motions that spuriously correlate with audio beats, but the overall gesture distribution (FGD) is far off
+
+---
+
 ## Key Files
 
 | File | Purpose |
