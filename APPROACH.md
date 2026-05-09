@@ -225,6 +225,20 @@ Three component ablations on the full model (E2E perceptual spk2 FT, `vae_lean_d
 | all-beat labels (no gesture-type info) | 0.4337 ± 0.0072 | 0.6926 ± 0.0054 | 14.54 ± 0.25 |
 | w/o E2E perceptual FT (allspk prior) | 0.5373 ± 0.0089 | 0.6791 ± 0.0039 | 15.10 ± 0.21 |
 
+### Continuation Loss Ablation (VAE boundary smoothness)
+
+Evaluated on speaker 2 test set (15 recordings) using autoregressive reconstruction (encode GT → decode with decoded anchors). Script: `eval_boundary_metrics.py`.
+
+| Metric | w/o cont. loss | w/ cont. loss |
+|---|---|---|
+| Boundary velocity error ↓ (mm) | 33.37 | **16.64** |
+| Boundary jerk ↓ (mm) | 37.88 | **17.31** |
+| Within-chunk MPJPE ↓ (mm) | 34.71 | **29.63** |
+
+- VAE: `vae_temporal_lean_no_cont/best.pt` (ep84, trained with `--cont-vel-weight 0.0 --anchor-recon-weight 0.0`) vs `vae_temporal_lean/best.pt`
+- **Boundary velocity/jerk error doubles** without the continuation loss — chunk transitions become visually jarring
+- Within-chunk MPJPE also degrades (34.71 vs 29.63mm), suggesting the continuation loss regularizes overall reconstruction quality beyond just boundaries
+
 ### Observations
 - **Anchor prefix** contributes +0.08 FGD (18% degradation) — important for temporal coherence across autoregressive chunks
 - **Flow-matching prior** contributes +0.30 FGD (69% degradation) — the dominant component; without it the model outputs incoherent random-z motions
@@ -243,36 +257,80 @@ To validate the structural advantage of the HR-VQVAE architecture, a direct appl
 *Note: The official EMAGE VQVAE weights appear to have been optimized solely for Speaker 2 (indicated by a `speaker_dims: 1` configuration), which explains the severe performance degradation on the All-Speaker dataset.*
 
 **Speaker 2 Test Set (15 recordings)**
-| Metric | HR-VQVAE (Spk2 FT) | EMAGE VQVAE (Pre-trained) |
-|---|---|---|
-| FGD ↓ | **0.269** | 0.4394 |
-| BC ↑ | 0.664 | **0.7853** |
-| MPJPE (all) ↓ | **32.66 mm** | 90.55 mm |
-| MPJPE body ↓ | **21.29 mm** | 54.74 mm |
-| MPJPE hands ↓ | **~42.50 mm** | ~120.00 mm |
+| Metric | HR-VQVAE (Spk2 FT) | EMAGE VQVAE (Pre-trained) | SynTalker RVQVAE (Official) |
+|---|---|---|---|
+| FGD ↓ | **0.269** | 0.4394 | 0.1660* |
+| BC ↑ | 0.664 | **0.7853** | 0.6974 |
+| MPJPE (all) ↓ | **32.66 mm** | 90.55 mm | 54.81 mm* |
+| MPJPE body ↓ | **21.29 mm** | 54.74 mm | - |
+
+*\*Note: SynTalker metrics calculated with zero global translation per their official protocol.*
 
 **All-Speaker Test Set (265 recordings)**
-| Metric | HR-VQVAE (Allspk) | EMAGE VQVAE (Pre-trained) |
-|---|---|---|
-| FGD ↓ | **0.194** | 2.1317 |
-| BC ↑ | 0.400 | **0.6267** |
-| MPJPE (all) ↓ | **26.03 mm** | 112.25 mm |
+| Metric | HR-VQVAE (Allspk) | EMAGE VQVAE (Pre-trained) | SynTalker RVQVAE (Official) |
+|---|---|---|---|
+| FGD ↓ | **0.194** | 2.1317 | 1.8582* |
+| BC ↑ | 0.400 | **0.6267** | 0.8143 |
+| MPJPE (all) ↓ | **26.03 mm** | 112.25 mm | 113.66 mm* |
+| MPJPE body ↓ | **17.71 mm** | 71.55 mm | 55.57 mm* |
+| MPJPE hands ↓ | **33.36 mm** | 145.22 mm | 157.72 mm* |
+| MPJPE face ↓ | **13.32 mm** | 35.12 mm | 70.16 mm* |
 
 ### Full Generation Pipeline (Audio -> Pose)
 
 Evaluation of the full audio-to-pose generation on the Speaker 2 test set, comparing the official EMAGE audio model to the E2E fine-tuned HR-VQVAE-POSE prior.
 
-| Metric | HR-VQVAE-POSE (Spk2) | EMAGE (Official Pre-trained) |
-|---|---|---|
-| FGD ↓ | **0.4327** | 0.6199 |
-| BC ↑ | 0.7028 | **0.7567** |
-| L1Div (vs GT 13.1) | **14.5590** | 12.4792 |
-| MPJPE ↓ | 243.30 mm | **215.56 mm** |
+**Speaker 2 Test Set (15 recordings)**
+| Model | FGD ↓ | BC ↑ | L1Div ↑ |
+|---|---|---|---|
+| **HR-VQVAE-POSE (Spk2 FT)** | **0.4374** | 0.6944 | 14.85 |
+| EMAGE (Official Pre-trained) | 0.6199 | **0.7567** | 12.48 |
+| EMAGE (Allspk, Ours) | 2.4169 | 0.4651 | **16.23** |
+
+**All-Speaker Test Set (265 recordings)**
+| Model | FGD ↓ | BC ↑ | L1Div ↑ |
+|---|---|---|---|
+| **HR-VQVAE-POSE (Allspk)** | **0.3416** | **0.4348** | **9.31** |
+| EMAGE (Official Pre-trained) | 2.5122 | 0.2811 | 7.95 |
+| EMAGE (Allspk, Ours) | 2.7199 | 0.3039 | 8.42 |
 
 **Conclusions:**
 1. **Holistic Consistency:** By utilizing a progressive 3-level learning approach rather than completely isolated VQ components for different body parts, the HR-VQVAE maintains massive improvements in spatial accuracy (MPJPE ~32mm vs ~90mm). 
 2. **Generalization:** HR-VQVAE acts as a true, generalized pose tokenizer across the entire BEAT2 dataset.
-3. **Perceptual Realism:** The final generated motions from HR-VQVAE are perceptually much closer to the ground truth distribution (FGD 0.43 vs 0.61), with higher diversity (L1Div) matching human variability.
+3. **Perceptual Realism:** The final generated motions from HR-VQVAE are perceptually much closer to the ground truth distribution (FGD 0.34 vs 2.72 on all-speaker test), with higher diversity and temporal coherence.
+4. **EMAGE Limitations:** The EMAGE architecture (PantoMatrix) struggles with the diversity of the all-speaker dataset, even when trained for 100 epochs. The isolated body-part codebooks and complex fusion mechanism may hinder convergence on heterogeneous multi-speaker data.
+
+---
+
+## 4x Temporal Downsampling Experiment
+
+Attempt to reproduce the clean run pipeline with `vae_temporal_4x` (temporal_downsample=4) instead of `vae_temporal_lean` (temporal_downsample=8), to test whether the better VAE reconstruction ceiling translates to better generation quality.
+
+### Pipeline (mirrors clean run exactly)
+
+| Stage | Script | Checkpoint | Result |
+|---|---|---|---|
+| VAE training | `m_train.py` | `vae_temporal_4x/best.pt` | Recon FGD=0.204, MPJPE=28.86mm |
+| Decoder FT (spk2) | `finetune_vae_decoder_4x_spk2.py` | `vae_4x_dec_spk2/best.pt` (ep37) | val_recon=0.0020 |
+| Allspk prior | `prior_net/train_diffusion_online.py` | `checkpoints_moment_allspk_4x_v2/best_ar.pt` (ep90) | val AR FGD=0.3622 |
+| E2E spk2 FT | `e2e_perceptual/train.py` | `checkpoints_moment_spk2_4x_v2/best.pt` (ep5) | val AR FGD=0.7022 |
+| Guidance sweep | `prior_net/evaluate_diffusion.py --split val` | best g=0.4 | val FGD=0.5111 |
+
+### Final Test Results (g=0.4, 5 seeds, speaker 2 test set)
+
+| Metric | 4x pipeline | 8x clean run |
+|---|---|---|
+| FGD ↓ | 0.4613 ± 0.0235 | **0.4374 ± 0.0067** |
+| BC ↑ | **0.7155 ± 0.0033** | 0.6944 ± 0.0060 |
+| L1Div ↑ | **15.20 ± 0.33** | 14.85 ± 0.25 |
+
+### Key Findings
+
+- The 4x VAE has a substantially better reconstruction ceiling (FGD 0.204 vs 0.323, MPJPE 28.86 vs 34.84mm) but **does not improve final generation FGD** (0.4613 vs 0.4374).
+- The bottleneck is the prior/E2E FT quality, not the VAE decoder. With 37-token latent sequences (vs 19 for 8x), the prior has more to learn and convergence is slower.
+- BC and L1Div are slightly better for 4x, suggesting more natural motion dynamics, but FGD (distribution-level quality) is worse.
+- Optimal guidance scale shifted from g=0.5 (8x) to g=0.4 (4x), with a flat plateau g=0.3–0.5.
+- **Conclusion:** 8x temporal downsampling is a better trade-off for this architecture — shorter latent sequences are easier for the flow-matching prior to learn, and the reconstruction quality difference does not compensate.
 
 ---
 
@@ -296,6 +354,88 @@ Evaluation of the full audio-to-pose generation on the Speaker 2 test set, compa
 | `generate_autoregressive_v2.py` | Chunked autoregressive generation with anchors |
 | `finetune_vae_decoder_spk2.py` | VAE decoder spk2 fine-tuning |
 | `checkpoint/beat2_poses/0/vae_temporal_lean/conf.ini` | VAE architecture config |
+
+---
+
+## LLM Gesture Planner Evaluation (Spk2)
+
+Tests whether LLM-predicted gesture-type labels (beat vs. semantic) can replace GT BEAT2 `.sem` labels at inference time.
+
+### Setup
+
+| Component | Value |
+|---|---|
+| VAE | `checkpoint/beat2_poses/0/vae_lean_dec_spk2/best.pt` |
+| Prior | `e2e_perceptual/checkpoints_moment_spk2_clean/best.pt` |
+| LLM planner | Qwen3.5-9B (few-shot) or Qwen3.5-9B + LoRA fine-tuned |
+| Guidance scale | 0.5 |
+| Seeds | 42, 123, 456, 789, 1337 |
+| Test set | spk2, 15 recordings |
+| Planner script | `batch_plan_gestures.py` (reads BEAT2 train_test_split.csv) |
+| Eval script | `prior_net/evaluate_diffusion.py --sem-dir <dir>` |
+
+Predicted `.txt` sem files saved to `planned_sem_fewshot/` and `planned_sem_lora/`.
+`--sem-dir` added to `prior_net/evaluate_diffusion.py` and `generate_autoregressive_v2.py::load_recording()` to override GT labels.
+
+### Results
+
+| Label source | FGD ↓ | BC ↑ | L1Div ↑ |
+|---|---|---|---|
+| GT BEAT2 `.sem` labels | **0.4374 ± 0.0067** | 0.6944 ± 0.0060 | 14.85 ± 0.25 |
+| All-beat (no gesture-type info) | 0.4337 ± 0.0072 | 0.6926 ± 0.0054 | 14.54 ± 0.25 |
+| LLM few-shot (Qwen3.5-9B) | 0.4575 ± 0.0149 | 0.6906 ± 0.0059 | 14.69 ± 0.16 |
+| LLM LoRA fine-tuned | 0.4634 ± 0.0107 | 0.7132 ± 0.0065 | 15.15 ± 0.45 |
+
+### Observations
+- LLM few-shot labels produce FGD 0.4575 vs. GT 0.4374 — only +0.020 degradation.
+- LLM LoRA labels produce FGD 0.4634 vs. GT 0.4374 — +0.026 degradation, slightly worse than few-shot.
+- The near-zero benefit of gesture-type conditioning (GT vs. all-beat: −0.004 FGD) means LLM planner errors have limited impact; the model relies mainly on audio features.
+- LoRA planner generates per-word annotations (~42 lines/recording = 21 seg pairs) vs. few-shot phrase-level (~6 lines/recording = 3 seg pairs). The fine-grained LoRA labels do not improve over coarser few-shot labels.
+- BC is higher for LoRA (0.713) vs. GT (0.694) and fewshot (0.691) — more semantic gesture labels may slightly improve beat alignment despite worse FGD.
+
+---
+
+## Per-Speaker FGD (Allspk Baseline, g=0.5, seed=42)
+
+**Model:** `e2e_perceptual/checkpoints_moment_allspk_clean/best.pt` + `vae_temporal_lean/best.pt`
+**Script:** `run_per_speaker_fgd_single.py` (single-pass: loads VAE + prior once, iterates all speakers)
+
+| Speaker | FGD ↓ | BC ↑ | L1Div ↑ | n |
+|---|---|---|---|---|
+| spk 1 | 1.7149 | 0.4737 | 8.42 | 15 |
+| spk 2 | 0.5822 | 0.6876 | 15.71 | 15 |
+| spk 3 | 0.9161 | 0.5141 | 10.58 | 15 |
+| spk 4 | 0.6802 | 0.5416 | 13.19 | 15 |
+| spk 5 | 0.6188 | 0.3465 | 6.03 | 15 |
+| spk 6 | 0.7346 | 0.4155 | 10.50 | 7 |
+| spk 7 | 0.9545 | 0.3716 | 7.02 | 15 |
+| spk 9 | 0.5360 | 0.3583 | 7.52 | 7 |
+| spk10 | 0.8818 | 0.4249 | 9.18 | 15 |
+| spk11 | **0.4407** | 0.2177 | 5.72 | 15 |
+| spk12 | 0.9844 | 0.6782 | 13.75 | 9 |
+| spk13 | 1.0455 | 0.5095 | 9.42 | 9 |
+| spk15 | 0.7162 | 0.3957 | 8.57 | 9 |
+| spk16 | 1.6007 | 0.5895 | 12.62 | 9 |
+| spk17 | 0.7085 | 0.5265 | 9.86 | 9 |
+| spk18 | 0.8885 | 0.5135 | 9.44 | 9 |
+| spk20 | 0.8864 | 0.4705 | 10.07 | 9 |
+| spk21 | 1.8095 | 0.4491 | 10.43 | 7 |
+| spk22 | 0.9076 | 0.4611 | 8.70 | 9 |
+| spk23 | **3.4143** | 0.4319 | 8.31 | 8 |
+| spk24 | 0.6196 | 0.3372 | 6.44 | 9 |
+| spk25 | 1.2496 | 0.1948 | 6.89 | 8 |
+| spk27 | 1.2003 | 0.4573 | 11.54 | 9 |
+| spk28 | 0.7448 | 0.2486 | 5.30 | 9 |
+| spk30 | 0.8755 | 0.3343 | 7.92 | 9 |
+| **Mean** | **1.028** | **0.438** | **9.32** | |
+| **Median** | **0.886** | **0.449** | **9.18** | |
+
+### Observations
+- Highest FGD: spk23 (3.41), spk21 (1.81), spk1 (1.71) — likely speakers with distinctive or unusual motion styles that are harder to model with the allspk prior.
+- Lowest FGD: spk11 (0.44), spk9 (0.54), spk2 (0.58) — these speakers have motion styles well-covered by the allspk training distribution.
+- Allspk prior FGD on spk2 (0.5822) is substantially higher than the E2E spk2 FT result (0.4374), confirming that speaker-specific fine-tuning is beneficial.
+- BC varies widely by speaker (0.19–0.69), reflecting differences in natural gesture-beat correlation across speakers.
+- Per-speaker results saved in `per_speaker_fgd/` (one JSON per speaker + `all_speakers.json`).
 
 ---
 
