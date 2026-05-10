@@ -14,8 +14,9 @@ meaning.
 This two-class distinction is reflected in the BEAT2 corpus~\cite{emage2024}
 and drives the conditioning in our model.
 Early data-driven approaches learn mappings from audio features to
-skeletal joint rotations using RNNs or CNNs, typically restricted to
-upper-body or hand-only motion~\cite{habibie,trimodal,ha2g}.
+skeletal joint rotations using RNNs or
+CNNs~\cite{s2g,trimodal,ha2g,habibie}, with most methods restricted to
+upper-body or hand-only motion.
 ZeroEGGS~\cite{zeroeggs2023} introduces example-based style control
 through a learned style embedding, demonstrating that VAE-style latent
 representations enable speaker-stylized gesture generation, although
@@ -23,9 +24,10 @@ it operates on a custom skeleton rather than the SMPL-X format used
 in our setting.
 Recent work has scaled to full-body SMPL-X generation.
 TalkSHOW~\cite{talkshow2023} generates holistic body motion from
-speech using a VQ-VAE stage followed by a Transformer prior, but
-generates fixed-length clips without an explicit mechanism for
-long-form continuity.
+speech using a compositional VQ-VAE for body and hand motion together
+with a Gated PixelCNN autoregressive prior over codebook indices;
+long-form quality depends on rollout stability, as there is no
+explicit boundary-continuity objective.
 DiffuseStyleGesture~\cite{diffusestylegesture2023} runs a diffusion
 model directly in continuous pose space with classifier-free guidance,
 producing stylized output but relying on initial-frame conditioning
@@ -57,7 +59,7 @@ demonstrating cross-speaker generalization that no prior work has
 verified at this scale.
 
 \paragraph{Hierarchical latent variable models.}
-VQ-VAE-2~\cite{vqvae2} introduced a two-level hierarchy of discrete
+VQ-VAE-2~\cite{vqvae2} introduced a multi-scale hierarchy of discrete
 codebooks for high-fidelity image generation, demonstrating that
 coarse-to-fine factorization substantially improves reconstruction
 quality over flat codebooks.
@@ -659,9 +661,9 @@ a matter of training-data coverage.
 To further verify that the aggregate result is not masking collapse on
 a subset of speakers, we evaluate the all-speaker prior (without any
 speaker-specific fine-tuning) on each speaker individually.
-Per-speaker FGD has median $8.86$ and ranges from $4.41$ on the easiest
-speaker to $34.1$ on the hardest, with $24$ of $25$ speakers below FGD
-$\approx\!18$.
+Per-speaker FGD has median $8.86$ and ranges from $4.41$ on the
+easiest speaker to $34.1$ on the hardest, with $23$ of $25$ speakers
+below FGD $18$ and only one outlier above $20$.
 The hardest speakers correspond to those with the most distinctive
 motion styles in BEAT2.
 Per-speaker fine-tuning further reduces error on individual speakers,
@@ -677,7 +679,11 @@ all-speaker model evaluated on Speaker~2 alone).
   \textbf{Our model is trained on all 25 speakers} and evaluated here
   on Speaker~2 for a fair comparison, demonstrating that
   cross-speaker generalization does not sacrifice per-speaker quality.
-  Baseline results sourced from \citet{syntalker}.
+  Baseline numbers are sourced from \citet{syntalker}'s comparison
+  table; the ground-truth row reports the canonical BEAT2 reference
+  values from \citet{emage2024}.
+  All metrics follow the standard BEAT2 reporting convention
+  (FGD$\times 10^{-1}$, BC$\times 10^{-1}$, diversity).
   Best in \textbf{bold}; second best \underline{underlined}.}
 \label{tab:results}
 \begin{tabular}{lccc}
@@ -708,8 +714,8 @@ EMAGE~\cite{emage2024}
 SynTalker (w/o both)~\cite{syntalker}
   & \underline{4.687}& \underline{7.363} & \underline{12.425} \\
 \midrule
-Ground Truth
-  & 0.000            & 6.897             & 12.755            \\
+Ground Truth~\cite{emage2024}
+  & 0.000            & 6.896             & 13.074            \\
 \midrule
 \textbf{Ours}
   & \textbf{4.374} $\pm$ 0.067
@@ -745,7 +751,7 @@ EMAGE~\cite{emage2024}                 & 27.199            & 3.039              
 SynTalker~\cite{syntalker}             & \textit{(TODO)}   & \textit{(TODO)}     & \textit{(TODO)}   \\
 \textbf{Ours (all-spk)}                & $\mathbf{3.416 \pm 0.073}$ & $4.348 \pm 0.016$ & $\mathbf{9.311 \pm 0.049}$ \\
 \midrule
-Ground Truth                           & 0.000             & 4.555               & 8.4273            \\
+Ground Truth                           & 0.000             & 4.555               & 8.427             \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -865,18 +871,15 @@ Ground Truth                & 0.000                       & 6.896             & 
 \end{tabular}
 \end{table}
 
-The small gap between GT \texttt{.sem} conditioning and the all-beat
-baseline ($0.04$ FGD) indicates that the model derives most of its
-rhythmic and semantic structure from audio rather than from the
-gesture-type label, which limits the upside of any gesture-type planner
-on FGD specifically.
-The fine-tuned planner nevertheless produces a $\sim 3\%$ higher BC
-than GT-conditioning, suggesting that its more frequent semantic-label
-predictions slightly improve audio--motion beat alignment despite a
-small FGD cost.
-The headline value of the planner is functional: it allows the system
-to operate on arbitrary speech without dataset-specific
-\texttt{.sem} annotations, with negligible impact on quality.
+The negligible gap between GT \texttt{.sem} conditioning and the
+all-beat baseline ($0.04$ FGD) indicates that the model derives most
+of its rhythmic and semantic structure from audio rather than from the
+gesture-type label.
+This bounds the achievable improvement from any gesture-type planner
+on FGD specifically; the fact that the LLM planner adds only
+$\sim\!0.2$ FGD on top of GT \texttt{.sem} confirms it preserves
+generation quality while removing the dependency on dataset-specific
+\texttt{.sem} annotations at inference.
 
 \paragraph{VAE reconstruction upper bound vs.\ VQ baselines.}
 Tables~\ref{tab:recon_spk2} and~\ref{tab:recon_allspk} report
