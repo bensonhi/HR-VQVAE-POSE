@@ -240,6 +240,32 @@ Evaluated on speaker 2 test set (15 recordings) using autoregressive reconstruct
 - **Boundary velocity/jerk error doubles** without the continuation loss — chunk transitions become visually jarring
 - Within-chunk MPJPE also degrades (34.71 vs 29.63mm), suggesting the continuation loss regularizes overall reconstruction quality beyond just boundaries
 
+### Smoothness Metrics: Continuous vs. Discrete Tokenizers
+
+Quantitative comparison of motion smoothness across the three tokenizer architectures, measured on autoregressive reconstruction of the Speaker 2 test set (15 recordings). This directly supports the paper's claim that continuous VAE latents avoid the snapping artifacts inherent to discrete codebook methods.
+
+**Methodology:** For each model, we run chunked autoregressive reconstruction (encode GT → decode with decoded anchors, crossfade blending) to produce full-length joint position sequences via SMPLX forward kinematics (55 joints, zero global orient/translation). Smoothness is computed as finite differences of joint positions:
+- **Mean Acceleration**: 2nd-order finite difference, L2 norm per joint per frame, averaged (mm/frame²)
+- **Mean Jerk**: 3rd-order finite difference, L2 norm per joint per frame, averaged (mm/frame³)
+- **P99 Jerk**: 99th percentile of jerk norms — captures outlier spikes at VQ code transition boundaries
+
+Script: `evaluate_smoothness_recon.py` (single script, model selected via `--model {hr-vqvae, emage, syntalker}`).
+
+| Method | Mean Accel ↓ | Mean Jerk ↓ | P99 Jerk ↓ |
+|---|---|---|---|
+| Ground Truth | 3.70 | 2.33 | 16.73 |
+| **HR-VQVAE (Ours)** | **4.25** | **5.33** | **42.70** |
+| SynTalker RVQVAE | 6.79 | 9.64 | 138.48 |
+| EMAGE VQ-VAE | 10.22 | 13.76 | 226.51 |
+
+*Units: mm/frame^n. Reconstruction verified against reference numbers (FGD/MPJPE) before computing smoothness.*
+
+**Key findings:**
+- **HR-VQVAE is 2.6× smoother than EMAGE** in mean jerk (5.33 vs 13.76) and **5.3× closer to GT in P99 jerk** (42.70 vs 226.51)
+- **P99 jerk is the most discriminative metric**: it captures the discrete snapping artifacts at codebook transition boundaries that make VQ reconstructions visually jarring. EMAGE's P99 jerk is 13.5× GT while HR-VQVAE's is only 2.6× GT
+- SynTalker's residual VQ sits between the two, consistent with its multi-level quantization partially mitigating single-codebook snapping
+- Even mean acceleration shows the ordering (4.25 < 6.79 < 10.22), confirming the smoothness advantage is not just in extreme frames
+
 ### Observations
 - **Anchor prefix** contributes +0.08 FGD (18% degradation) — important for temporal coherence across autoregressive chunks
 - **Flow-matching prior** contributes +0.30 FGD (69% degradation) — the dominant component; without it the model outputs incoherent random-z motions
