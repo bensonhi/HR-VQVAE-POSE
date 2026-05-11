@@ -163,7 +163,8 @@ speakers. We present GestureCraft, a planning-and-generation framework
 for synthesizing full-body SMPL-X gestures directly from speech. Our
 model centers on a body-part-hierarchical Transformer VAE with a
 continuous latent space partitioned into face, body, and hand
-components, trained progressively from coarse to fine. A conditional
+slices, each supervised by partial-output decoding losses on its
+assigned body part. A conditional
 flow-matching prior generates this latent conditioned on audio, speaker
 identity, and gesture type. To support long-form generation, we
 introduce anchor-prefix conditioning with a continuation velocity loss

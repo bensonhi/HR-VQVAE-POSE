@@ -75,7 +75,7 @@ explicitly trains the decoder for velocity continuity at chunk
 boundaries.
 A conditional flow-matching prior~\cite{lipman2023flow,rectifiedflow}
 over the continuous latent is pretrained on all $25$ BEAT2 speakers and
-fine-tuned end-to-end with perceptual losses---an FGD~\cite{fid}
+fine-tuned end-to-end with perceptual losses---an FGD~\cite{trimodal,fid}
 moment-matching term (mean and covariance in feature space) and a
 beat-alignment term.
 Finally, a LoRA-fine-tuned~\cite{lora2022} Qwen3.5-9B~\cite{qwen3}
@@ -277,7 +277,7 @@ need for manual \texttt{.sem} annotation at inference time.
     gesture-type embeddings condition a flow-matching prior that samples
     a temporal latent partitioned channel-wise into face, body, and hand
     slices; the latent and an anchor-prefix from the previous chunk drive
-    a hierarchical Transformer decoder with dual cross-attention, whose
+    a Transformer decoder with dual cross-attention (to the body-part-hierarchical latent and to audio), whose
     output is rendered through the SMPL-X body model. (c) Long-form: the
     recording is split into successive chunks; the last K frames of each
     chunk are reused as the anchor prefix of the next, and a
@@ -289,8 +289,8 @@ need for manual \texttt{.sem} annotation at inference time.
     dataset-specific annotations at inference. \textbf{(b) Generation:}
     a conditional flow-matching prior samples a temporal latent
     $\mathbf{z}\!\in\!\mathbb{R}^{T'\times d_z}$, partitioned channel-wise
-    into face, body, and hand slices, that drives a hierarchical
-    Transformer decoder with anchor-prefix conditioning
+    into face, body, and hand slices, that drives a Transformer
+    decoder with dual cross-attention and anchor-prefix conditioning
     (Sections~\ref{sec:vae}--\ref{sec:prior}). \textbf{(c) Long-form:}
     chunks are generated left-to-right; the last $K$ frames of each
     chunk become the anchor prefix of the next, and a continuation
@@ -813,14 +813,14 @@ All hyperparameter and checkpoint selection decisions---including the
 classifier-free guidance scale $g$---are made on the \emph{validation} split.
 Final metrics are computed on the \emph{test} split with 5 random seeds;
 we report mean~$\pm$~std.
-BC values are reported in the scale used by prior work (raw metric $\times 10$).
+FGD and BC are reported in the scale used by prior work (raw metric $\times 10$).
 
 \subsection{Quantitative Comparison}
 
 We report three standard metrics following \citet{emage2024}:
-\textbf{FGD} (Fr\'echet Gesture Distance; lower is better),
-\textbf{BC} (Beat Consistency; $\rightarrow$ closer to GT is better),
-and \textbf{L1Div} (L1 diversity; higher is better).
+\textbf{FGD} (Fr\'echet Gesture Distance~\cite{trimodal}; lower is
+better), \textbf{BC} (Beat Consistency; $\rightarrow$ closer to GT is
+better), and \textbf{L1Div} (L1 diversity; higher is better).
 Our numbers are averaged over 5 random seeds; mean $\pm$ standard
 deviation are reported.
 Baseline numbers in Table~\ref{tab:results} are sourced from
@@ -839,15 +839,14 @@ Table~\ref{tab:results_allspk} reports results on the full 25-speaker
 test set.
 We compare against EMAGE~\cite{emage2024} and SynTalker~\cite{syntalker},
 both re-trained from their official codebases on the full 25-speaker
-training set with default hyperparameters and the same epoch budgets
-used in their respective original papers.
+training set with default hyperparameters and the
+$\text{\texttt{speaker\_dims}}\!=\!31$ multi-speaker setting.
 Our model achieves FGD~$3.42$, roughly $6{\times}$ lower than
-SynTalker ($20.61$) and $8{\times}$ lower than EMAGE ($27.20$).
+SynTalker ($20.61$) and $7{\times}$ lower than EMAGE ($23.69$).
 For reference, the released EMAGE checkpoint (trained on Speaker~2
-only) also fails to generalize, scoring FGD~$25.1$ on this test set;
-re-training on all speakers does not close the gap, indicating the
-limitation is architectural rather than a matter of training-data
-coverage.
+only) scores FGD~$25.1$ on this test set; re-training on all speakers
+yields only a modest improvement, indicating the limitation is
+architectural rather than a matter of training-data coverage.
 To further verify that the aggregate result is not masking collapse on
 a subset of speakers, we evaluate the all-speaker prior (without any
 speaker-specific fine-tuning) on each speaker individually.
@@ -870,8 +869,11 @@ all-speaker model evaluated on Speaker~2 alone).
   on Speaker~2 for a fair comparison, demonstrating that
   cross-speaker generalization does not sacrifice per-speaker quality.
   Baseline numbers are sourced from \citet{syntalker}'s comparison
-  table; the ground-truth row reports the canonical BEAT2 reference
-  values from \citet{emage2024}.
+  table; ``SynTalker (w/o both)'' refers to the SynTalker variant
+  trained without both motion-representation pre-training and
+  text--motion alignment pre-training, as defined in their paper.
+  The ground-truth row reports the canonical BEAT2 reference values
+  from \citet{emage2024}.
   All metrics follow the standard BEAT2 reporting convention
   (FGD$\times 10^{-1}$, BC$\times 10^{-1}$, diversity).
   Best in \textbf{bold}; second best \underline{underlined}.}
@@ -925,17 +927,17 @@ Ground Truth~\cite{emage2024}
 \caption{Generation results on the full BEAT2 25-speaker test set
   (265 recordings).
   Both baselines are re-trained from the official codebase on the
-  full 25-speaker training set with default hyperparameters
-  (EMAGE: 100 epochs, matching its original 25-speaker setting;
-  SynTalker: 500 epochs, trained to convergence).
+  full 25-speaker training set with default hyperparameters and the
+  $\text{\texttt{speaker\_dims}}\!=\!31$ multi-speaker setting,
+  selecting checkpoints by best validation FGD.
   Baseline rows are single-seed; our row is mean~$\pm$~std over
-  5 seeds. BC scaled to paper units (raw~$\times 10$).}
+  5 seeds. FGD and BC reported on the paper scale (raw~$\times 10$).}
 \label{tab:results_allspk}
 \begin{tabular}{lccc}
 \toprule
 Method & FGD $\downarrow$ & BC $\rightarrow$ & L1Div $\uparrow$ \\
 \midrule
-EMAGE~\cite{emage2024}                 & 27.199            & 3.039               & 8.42              \\
+EMAGE~\cite{emage2024}                 & 23.694            & 0.848               & 7.80              \\
 SynTalker~\cite{syntalker}             & 20.605            & 6.154               & 8.51              \\
 \textbf{Ours (all-spk)}                & $\mathbf{3.416 \pm 0.073}$ & $4.348 \pm 0.016$ & $\mathbf{9.311 \pm 0.049}$ \\
 \midrule
@@ -1149,7 +1151,11 @@ reconstruction quality using the encoder's posterior mean
 $\boldsymbol{\mu}$ (deterministic; no sampling noise) in chunked
 autoregressive mode.
 We compare against the official pre-trained tokenizers of EMAGE and
-SynTalker (RVQ-VAE) under an identical chunked evaluation protocol.
+SynTalker (RVQ-VAE).
+Our VAE and EMAGE's VQ-VAE share a chunked autoregressive evaluation
+protocol; SynTalker is evaluated under its own full-recording protocol
+(53 joints, zero global translation) since its non-chunked encoding
+makes a uniform protocol infeasible.
 On the standard Speaker~2 test set, our continuous-latent VAE achieves
 the lowest joint error across body, hands, and face, with overall
 MPJPE about $1.7{\times}$ lower than the next-best VQ baseline
@@ -1170,11 +1176,12 @@ per-speaker codebooks.
 \caption{Reconstruction upper bound on the BEAT2 Speaker~2 test set
   (15 recordings; encoder $\boldsymbol{\mu}$, no sampling).
   Per-part MPJPE in mm.
-  We compare against the official pre-trained tokenizers of two recent
-  VQ-based gesture systems under an identical chunked autoregressive
-  protocol.
-  $^*$SynTalker metrics computed under their official protocol with zero
-  global translation.}
+  Our VAE and EMAGE's VQ-VAE are evaluated under a shared chunked
+  autoregressive protocol; SynTalker is evaluated using its own
+  protocol since their full-recording VQ encoding does not fit the
+  chunked autoregressive setup.
+  $^*$SynTalker: full-recording VQ encode/decode, 53 joints (excluding
+  eyes), zero global translation, per-recording averaging.}
 \label{tab:recon_spk2}
 \begin{tabular}{lcccc}
 \toprule
@@ -1197,7 +1204,8 @@ MPJPE face $\downarrow$  & ---    & 25.91 & 18.45 & \textbf{17.54} \\
   all-speaker continuous VAE preserves reconstruction quality across the
   full corpus, with overall MPJPE roughly $4\times$ lower than either
   VQ baseline.
-  $^*$SynTalker under its official zero-global-translation protocol.}
+  $^*$SynTalker: full-recording VQ encode/decode, 53 joints (excluding
+  eyes), zero global translation.}
 \label{tab:recon_allspk}
 \begin{tabular}{lccc}
 \toprule
