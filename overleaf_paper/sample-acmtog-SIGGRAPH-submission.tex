@@ -1,7 +1,27 @@
-\documentclass[acmtog,anonymous,review]{acmart}
+\documentclass[sigconf,anonymous,review]{acmart}
 \acmSubmissionID{1234}
 
 \usepackage{booktabs} % For formal tables
+
+% Allow extra inter-word stretch to avoid overfull hboxes from long
+% hyphenated terms (e.g. "anchor-prefix", "channel-wise") in the tight
+% two-column sigconf layout.
+\emergencystretch=4em
+\tolerance=2000
+
+% Hint hyphenation for compound words frequently used in our prose so
+% they break across column boundaries.
+\hyphenation{
+  channel-wise
+  body-part-hier-ar-chi-cal
+  anchor-pre-fix
+  chunked-au-to-re-gres-sive
+  forced-align-ment
+  bound-ary-con-ti-nu-i-ty
+  Diff-use-Style-Ges-ture
+  Ges-ture-Dif-fu-CLIP
+  Trans-form-er
+}
 
 % TOG prefers author-name bib system with square brackets
 \citestyle{acmauthoryear}
@@ -36,12 +56,9 @@
 \definecolor{cLoss}{HTML}{B23B3B}
 
 % Metadata Information
-\acmJournal{TOG}
-%\acmVolume{38}
-%\acmNumber{4}
-%\acmArticle{39}
-%\acmYear{2019}
-%\acmMonth{7}
+% (sigconf mode for SIGGRAPH/SIGGRAPH Asia conference proceedings;
+% remove or update \acmConference details for the targeted venue)
+%\acmConference[SIGGRAPH '26]{ACM SIGGRAPH 2026 Conference Proceedings}{August 09--13, 2026}{Vancouver, Canada}
 
 % Copyright
 %\setcopyright{acmcopyright}
@@ -167,40 +184,41 @@ standard evaluation protocol.
 \begin{CCSXML}
 <ccs2012>
  <concept>
-  <concept_id>10010520.10010553.10010562</concept_id>
-  <concept_desc>Computer systems organization~Embedded systems</concept_desc>
+  <concept_id>10010147.10010371.10010396.10010402</concept_id>
+  <concept_desc>Computing methodologies~Animation</concept_desc>
   <concept_significance>500</concept_significance>
  </concept>
  <concept>
-  <concept_id>10010520.10010575.10010755</concept_id>
-  <concept_desc>Computer systems organization~Redundancy</concept_desc>
+  <concept_id>10010147.10010178.10010224.10010240.10010241</concept_id>
+  <concept_desc>Computing methodologies~Motion capture</concept_desc>
   <concept_significance>300</concept_significance>
  </concept>
  <concept>
-  <concept_id>10010520.10010553.10010554</concept_id>
-  <concept_desc>Computer systems organization~Robotics</concept_desc>
-  <concept_significance>100</concept_significance>
+  <concept_id>10010147.10010257.10010258.10010259.10010263</concept_id>
+  <concept_desc>Computing methodologies~Supervised learning by regression</concept_desc>
+  <concept_significance>300</concept_significance>
  </concept>
  <concept>
-  <concept_id>10003033.10003083.10003095</concept_id>
-  <concept_desc>Networks~Network reliability</concept_desc>
+  <concept_id>10010147.10010178.10010179.10003352</concept_id>
+  <concept_desc>Computing methodologies~Natural language generation</concept_desc>
   <concept_significance>100</concept_significance>
  </concept>
 </ccs2012>
 \end{CCSXML}
 
-\ccsdesc[500]{Computer systems organization~Embedded systems}
-\ccsdesc[300]{Computer systems organization~Redundancy}
-\ccsdesc{Computer systems organization~Robotics}
-\ccsdesc[100]{Networks~Network reliability}
+\ccsdesc[500]{Computing methodologies~Animation}
+\ccsdesc[300]{Computing methodologies~Motion capture}
+\ccsdesc[300]{Computing methodologies~Supervised learning by regression}
+\ccsdesc[100]{Computing methodologies~Natural language generation}
 
 %
 % End generated code
 %
 
 
-\keywords{Wireless sensor networks, media access control,
-multi-channel, radio interference, time synchronization}
+\keywords{Co-speech gesture generation, full-body motion synthesis,
+SMPL-X, variational autoencoder, flow matching, large language models,
+character animation}
 
 
 
