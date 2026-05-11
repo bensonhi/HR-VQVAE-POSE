@@ -65,8 +65,9 @@ addresses all three problems within a single pipeline.
 Our central design choice is to replace the discrete codebook with a
 \emph{continuous, body-part-hierarchical} Gaussian latent: a
 temporally downsampled sequence of $d_z\!=\!16$-dimensional tokens,
-each partitioned channel-wise into face, body, and hand slices and
-trained progressively from coarse to fine through a
+each partitioned channel-wise into face, body, and hand slices, with
+per-level partial-output supervision that drives each slice to
+specialize on its assigned body part, learned through a
 Transformer~\cite{transformer} encoder-decoder VAE.
 Long-form motion is supported by an \emph{anchor-prefix} conditioning
 mechanism paired with a \emph{continuation velocity loss} that
@@ -305,10 +306,10 @@ from speech audio and a speaker identity.
 The system consists of three learned components
 (Figure~\ref{fig:overview}), trained in stages:
 \begin{enumerate}
-\item a \textbf{body-part-hierarchical temporal VAE} trained progressively
-      on all 25 speakers, encoding SMPL-X pose sequences into a
-      continuous latent space structured around the body's anatomical
-      hierarchy (Section~\ref{sec:vae});
+\item a \textbf{body-part-hierarchical temporal VAE} trained on all 25
+      speakers, encoding SMPL-X pose sequences into a continuous
+      latent space structured around the body's anatomical hierarchy
+      (Section~\ref{sec:vae});
 \item a \textbf{conditional flow-matching prior} that first pretrains on
       all speakers and is then fine-tuned end-to-end with perceptual losses,
       sampling the latent conditioned on audio, speaker, and gesture type,
@@ -348,10 +349,13 @@ residual vector quantization, we factorize a \emph{continuous} Gaussian
 latent into $L\!=\!3$ ordered slices, each assigned to a distinct body part:
 face ($\ell\!=\!0$), body ($\ell\!=\!1$), and hands ($\ell\!=\!2$).
 The slice ordering reflects the relative dimensionality of each body
-part---face uses 9 axis-angle dimensions, body 66, and hands 90---so
-the progressive curriculum activates the smallest-dimensional slice
-first and adds higher-dimensional parts as training stabilizes,
-culminating in the fine finger articulation captured by the hand slice.
+part: face (jaw + eyes) spans 9 scalar dimensions, body 66, and hands
+90.
+Through partial-output decoding (Section~\ref{sec:train}), level $0$
+must reconstruct the face from $\mathbf{z}^{(0)}$ alone, level $1$
+adds the body using $[\mathbf{z}^{(0)}, \mathbf{z}^{(1)}]$, and level
+$2$ adds the hands using the full latent---so smaller body-part slices
+specialize first along the channel-wise hierarchy.
 All level losses backpropagate jointly through the shared encoder and
 decoder weights in a single backward pass; the body-part assignment
 ensures that each level's local loss signal is computed only from the
@@ -415,9 +419,10 @@ The per-level KL divergence is computed independently over each slice:
   \right).
 \label{eq:kl}
 \end{equation}
-This slice-level KL decomposition lets the progressive training
-curriculum (Section~\ref{sec:train}) activate one level at a time without
-any interaction between the corresponding posterior estimates.
+This slice-level KL decomposition lets each level's per-part loss
+(Section~\ref{sec:train}) regularize its assigned slice independently,
+without coupling its posterior to the others through a shared KL
+term.
 
 \paragraph{Decoder.}
 A pre-norm Transformer decoder generates the output sequence at the
@@ -472,64 +477,78 @@ at every layer.
 \end{figure}
 
 % -----------------------------------------------------------------------
-\subsection{Training Objective and Body-Part-Progressive Curriculum}
+\subsection{Training Objective}
 \label{sec:train}
 % -----------------------------------------------------------------------
 
 \paragraph{Per-level body-part loss.}
 For level $\ell \in \{0,1,2\}$, the decoder produces a partial output
-$\hat{\mathbf{x}}^{(\ell)}$ using only $[\mathbf{z}^{(0)}, \ldots, \mathbf{z}^{(\ell)}]$
-(higher slices are zeroed out).
-This partial output is supervised on the body part assigned to level $\ell$
-with four loss terms—axis-angle MSE, velocity MSE, SMPL-X mesh-vertex MSE,
-and joint-position MSE—all computed only on the relevant joint/vertex subset:
+$\hat{\mathbf{x}}^{(\ell)}$ using only
+$[\mathbf{z}^{(0)}, \ldots, \mathbf{z}^{(\ell)}]$ (higher slices are
+zeroed out).
+This partial output is supervised on the body part assigned to level
+$\ell$ with four loss terms---axis-angle MSE, velocity MSE, SMPL-X
+mesh-vertex MSE, and joint-position MSE---all computed only on the
+relevant joint/vertex subset, with a velocity coefficient
+$\lambda_\text{vel}\!=\!3$:
 \begin{equation}
 \mathcal{L}^{(\ell)}_\text{local} =
   \mathcal{L}_\text{aa}^{(\ell)}
-  + \mathcal{L}_\text{vel}^{(\ell)}
+  + \lambda_\text{vel}\,\mathcal{L}_\text{vel}^{(\ell)}
   + \mathcal{L}_\text{mesh}^{(\ell)}
   + \mathcal{L}_\text{joint}^{(\ell)}.
 \end{equation}
 Including mesh and joint losses in SMPL-X space prevents axis-angle
-accumulation errors from causing visible end-effector drift in finger and
-face joints.
+accumulation errors from causing visible end-effector drift in finger
+and face joints.
 
 \paragraph{Global loss.}
-The final decoder output $\hat{\mathbf{x}}^{(L-1)}$ is supervised on all
-body parts jointly with the same four-term loss:
-$\mathcal{L}_\text{global} = \mathcal{L}_\text{aa} + \mathcal{L}_\text{vel}
-+ \mathcal{L}_\text{mesh} + \mathcal{L}_\text{joint}$.
+The final decoder output $\hat{\mathbf{x}}^{(L-1)}$ is supervised on
+all body parts jointly with the same four-term loss, up-weighting the
+SMPL-X mesh and joint terms:
+$\mathcal{L}_\text{global} = \mathcal{L}_\text{aa}
++ \lambda_\text{vel}\,\mathcal{L}_\text{vel}
++ 5\,\mathcal{L}_\text{mesh} + 3\,\mathcal{L}_\text{joint}$
+($\lambda_\text{vel}\!=\!3$).
 
 \paragraph{Total loss.}
 \begin{equation}
 \mathcal{L} =
   \sum_{\ell=0}^{L-1} w_\ell \,\mathcal{L}^{(\ell)}_\text{local}
   +\, \mathcal{L}_\text{global}
-  +\, \beta(\text{epoch})\,\mathcal{L}_\text{KL}
+  +\, \beta\,\mathcal{L}_\text{KL}
   +\, \lambda_\text{cont}\,\mathcal{L}_\text{cont}
   +\, \lambda_\text{anc}\,\mathcal{L}_\text{anc},
 \end{equation}
 where $\mathcal{L}_\text{cont}$ is the continuation velocity loss
-defined in Section~\ref{sec:autoreg},
-$\mathcal{L}_\text{anc}$ is the auxiliary anchor-reconstruction MSE,
-and $\beta(\text{epoch})$ is linearly annealed from 0 to its maximum
-value over the first 100 epochs.
-The KL coefficient $\beta$ stays small enough throughout training that
-posterior collapse does not occur in practice; we observe stable
-non-trivial KL values across all $L$ levels.
+defined in Section~\ref{sec:autoreg} and $\mathcal{L}_\text{anc}$ is
+the auxiliary anchor-reconstruction MSE.
+The KL coefficient $\beta$ is kept at a small constant
+($\beta\!=\!10^{-5}$) so the reconstruction terms dominate the
+optimization; in practice we observe stable non-trivial KL values
+across all $L$ levels and no posterior collapse.
 
-\paragraph{Progressive curriculum.}
-Levels are activated coarse-to-fine across epoch ranges.
-In epoch range $[E_\ell, E_{\ell+1})$, only the partial outputs
-$\hat{\mathbf{x}}^{(0)}, \ldots, \hat{\mathbf{x}}^{(\ell)}$ contribute to the
-local loss, so the decoder first masters global body motion before
-taking on fine hand articulation.
-The global loss always includes all levels.
+\paragraph{Level-wise specialization through partial decoding.}
+The progressive structure is enforced through the partial-output
+construction itself rather than an epoch-based schedule: every level
+loss $\mathcal{L}^{(\ell)}_\text{local}$ supervises the decoder
+output produced from only $[\mathbf{z}^{(0)}, \ldots, \mathbf{z}^{(\ell)}]$
+(higher slices zeroed) on the body part assigned to level $\ell$.
+This means level $0$ must explain the face from
+$\mathbf{z}^{(0)}$ alone, level $1$ must explain the body from
+$[\mathbf{z}^{(0)}, \mathbf{z}^{(1)}]$, and level $2$ must explain
+the hands using the full latent.
+The global loss $\mathcal{L}_\text{global}$, applied to the full-latent
+output, ensures the final reconstruction remains coherent across all
+body parts.
 
 \paragraph{Hyperparameters.}
 $d_\text{model}\!=\!512$, $d_z\!=\!16$, $L\!=\!3$, 8 attention heads,
 6 encoder and 6 decoder layers, $d_\text{ff}\!=\!2048$, dropout 0.1,
 temporal stride $r\!=\!8$, $K_\text{max}\!=\!90$ anchor frames.
+Loss coefficients: $w_\ell\!=\!1$ for all $\ell$,
+$\lambda_\text{vel}\!=\!3$, $\beta\!=\!10^{-5}$,
+$\lambda_\text{cont}\!=\!3$, $\lambda_\text{anc}\!=\!0.1$.
 Trained for 400 epochs, batch size 8, Adam with $\text{lr}\!=\!10^{-4}$.
 
 % -----------------------------------------------------------------------
@@ -1242,10 +1261,11 @@ We presented \textbf{GestureCraft}, a framework for audio-driven
 co-speech gesture synthesis built on a continuous, body-part-hierarchical
 latent rather than the discrete codebooks that dominate recent work.
 Three design choices distinguish the system: a Gaussian latent
-partitioned channel-wise into face, body, and hand slices and trained
-progressively from coarse to fine; an anchor-prefix conditioning scheme
-paired with a continuation velocity loss that trains the decoder
-directly for kinematic continuity across chunk boundaries; and a
+partitioned channel-wise into face, body, and hand slices, each
+supervised by per-level body-part-localized partial-output losses; an
+anchor-prefix conditioning scheme paired with a continuation velocity
+loss that trains the decoder directly for kinematic continuity across
+chunk boundaries; and a
 conditional flow-matching prior pretrained on all $25$ BEAT2 speakers
 and fine-tuned end-to-end with FGD moment-matching and beat-alignment
 perceptual losses.
