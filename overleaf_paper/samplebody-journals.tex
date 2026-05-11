@@ -636,11 +636,16 @@ We replace the standard Gaussian prior with a conditional
 $p(\mathbf{z} \mid \mathbf{a}, s, g)$.
 
 \paragraph{Architecture.}
-An \texttt{AudioEncoder} (Transformer with CLS token, speaker and
-gesture-type embeddings) produces a fixed-size context vector $\mathbf{c}$.
-A Transformer velocity field $v_\theta(\mathbf{z}_t, t, \mathbf{c})$, where
-$t \in [0,1]$ is the flow time, denoises the latent token sequence
-$\mathbf{z}_{1:T'}$.
+A temporal audio encoder (Transformer over Wav2Vec features, followed
+by a strided 1-D convolution matching the VAE's stride $r\!=\!8$)
+produces a per-token audio context
+$\mathbf{c}_{1:T'} \in \mathbb{R}^{T' \times d_\text{model}}$, with
+speaker and gesture-type embeddings broadcast-added.
+A Transformer velocity field $v_\theta(\mathbf{z}_t, t, \mathbf{c})$
+denoises the latent token sequence $\mathbf{z}_{1:T'}$, conditioning
+on the flow time $t \in [0, 1]$ through zero-initialized
+DiT-style~\cite{dit} AdaLN modulation, and on the audio context
+through cross-attention.
 
 \paragraph{VAE decoder fine-tuning.}
 The VAE is first trained on all 25 speakers.
@@ -884,10 +889,8 @@ Ground Truth~\cite{emage2024}
 \end{table*}
 
 % Pending before submission:
-%   - Fill SynTalker row in tab:results_allspk (currently TODO).
 %   - Replace fig:overview and fig:vae_train placeholders.
-%   - Optional: hierarchy ablation, velocity-jerk metric vs VQ baselines,
-%     supplementary video, user study.
+%   - Optional: hierarchy ablation, supplementary video, user study.
 % Convention: FGD/BC paper-scale = raw x 10 (evaluate_generation.py:418).
 % Hands MPJPE rows in tab:recon_* are averaged across left/right hands.
 
@@ -1078,7 +1081,7 @@ test set unusually forgiving of conservative planners.
 Both LLM planners preserve downstream quality to within $0.26$ FGD of
 GT-conditioning; the few-shot model lands closer to GT despite weaker
 boundary detection, while the LoRA model's slight FGD penalty
-($+0.026$) tracks its tendency to over-predict semantic on a
+($+0.26$) tracks its tendency to over-predict semantic on a
 beat-dominated recording set.
 
 \paragraph{A diversity--fidelity trade-off explains the planner
@@ -1154,8 +1157,8 @@ per-speaker codebooks.
 FGD $\downarrow$         & 4.394 & \textbf{1.66} & 3.232 & 2.69 \\
 MPJPE (all) $\downarrow$ & 90.55 & 55.72 & 34.84 & \textbf{32.66} \\
 MPJPE body $\downarrow$  & 54.74 & 24.49 & 22.76 & \textbf{21.29} \\
-MPJPE hands $\downarrow$ & 120.19 & 79.62 & ${\sim}45$ & \textbf{${\sim}42$} \\
-MPJPE face $\downarrow$  & ---    & 25.91 & ---   & \textbf{17.54} \\
+MPJPE hands $\downarrow$ & 120.19 & 79.62 & 45.35 & \textbf{42.52} \\
+MPJPE face $\downarrow$  & ---    & 25.91 & 18.45 & \textbf{17.54} \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -1191,13 +1194,12 @@ we run chunked autoregressive reconstruction of the Speaker~2 test set,
 forward through SMPL-X to obtain joint positions, and compute mean
 acceleration, mean jerk, and the 99th-percentile jerk (which captures
 boundary spikes invisible in mean statistics).
-Our continuous VAE is the smoothest non-GT method on every axis:
-$2.6{\times}$ smoother than EMAGE in mean jerk and
-$5.3{\times}$ closer to GT than EMAGE in P99 jerk.
+Our continuous VAE is the smoothest non-GT method on every axis,
+with mean jerk $2.6{\times}$ lower than EMAGE.
 The P99 metric is the most discriminative---it isolates the codeword
-transition artifacts---and HR-VQVAE's P99 jerk is only $2.6{\times}$ GT
-while EMAGE's is $13.5{\times}$ GT, quantifying the snapping pattern
-predicted by the discretization step in VQ tokenizers.
+transition artifacts---and quantifies the snapping pattern predicted
+by the discretization step in VQ tokenizers: our P99 jerk is
+$2.6{\times}$ GT while EMAGE's is $13.5{\times}$ GT.
 SynTalker's RVQ sits between EMAGE and ours, consistent with
 multi-level residual quantization partially mitigating single-codebook
 snapping.
