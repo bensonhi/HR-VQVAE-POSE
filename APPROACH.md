@@ -312,7 +312,8 @@ Evaluation of the full audio-to-pose generation on the Speaker 2 test set, compa
 | Model | FGD ↓ | BC ↑ | L1Div ↑ |
 |---|---|---|---|
 | **HR-VQVAE-POSE (Spk2 FT)** | **0.4374** | 0.6944 | 14.85 |
-| EMAGE (Allspk, Ours) | 2.4169 | 0.4651 | **16.23** |
+| EMAGE (Official Pre-trained, spk2-only) | 0.6163 | **0.5205** | 11.43 |
+| EMAGE (Allspk, Ours) | 0.9771 | 0.2222 | **12.74** |
 
 **All-Speaker Test Set (265 recordings)**
 | Model | FGD ↓ | BC ↑ | L1Div ↑ |
@@ -320,13 +321,44 @@ Evaluation of the full audio-to-pose generation on the Speaker 2 test set, compa
 | **HR-VQVAE-POSE (Allspk)** | **0.3416** | **0.4348** | **9.31** |
 | SynTalker (Allspk, Ours, ep500) | 2.0605 | 0.6154 | 8.51 |
 | EMAGE (Official Pre-trained) | 2.5122 | 0.2811 | 7.95 |
-| EMAGE (Allspk, Ours) | 2.7199 | 0.3039 | 8.42 |
+| EMAGE (Allspk, Ours, iter 61500) | 2.3694 | 0.0848 | 7.80 |
+
+*EMAGE allspk model: `PantoMatrix/outputs/emage_audio_20260511-1716/checkpoints/best/` (speaker_dims=31, best val FGD=2.62 at iter 61500/80000). Official pretrained EMAGE has speaker_dims=1 (spk2-only), so allspk test comparison uses our retrained model. Evaluation script: `PantoMatrix/eval_emage_allspk.py --mode infer_and_eval`.*
+
+**EMAGE Allspk Per-Speaker FGD:**
+| Speaker | Recs | FGD ↓ | BC ↑ | L1Div ↑ |
+|---|---|---|---|---|
+| spk 1 | 15 | 3.24 | 0.072 | 7.22 |
+| spk 2 | 15 | 0.98 | 0.222 | 12.74 |
+| spk 3 | 15 | 2.99 | 0.116 | 8.44 |
+| spk 4 | 15 | 2.51 | 0.137 | 11.74 |
+| spk 5 | 15 | 3.72 | 0.056 | 7.17 |
+| spk 6 | 7 | 3.52 | 0.126 | 8.20 |
+| spk 7 | 15 | 4.11 | 0.090 | 6.17 |
+| spk 9 | 7 | 2.95 | 0.025 | 8.85 |
+| spk10 | 15 | 5.29 | 0.028 | 7.91 |
+| spk11 | 15 | 2.95 | 0.026 | 5.85 |
+| spk12 | 9 | 4.61 | 0.207 | 14.56 |
+| spk13 | 9 | 3.07 | 0.139 | 7.80 |
+| spk15 | 9 | 4.36 | 0.040 | 6.46 |
+| spk16 | 9 | 3.63 | 0.093 | 12.24 |
+| spk17 | 9 | 3.50 | 0.087 | 5.72 |
+| spk18 | 9 | 4.23 | 0.007 | 4.70 |
+| spk20 | 9 | 3.26 | 0.042 | 9.31 |
+| spk21 | 7 | 4.58 | 0.140 | 7.55 |
+| spk22 | 9 | 4.40 | 0.066 | 6.65 |
+| spk23 | 8 | 5.82 | 0.076 | 5.36 |
+| spk24 | 9 | 5.08 | 0.093 | 4.84 |
+| spk25 | 8 | 4.12 | 0.031 | 7.52 |
+| spk27 | 9 | 4.79 | 0.091 | 7.77 |
+| spk28 | 9 | 4.03 | 0.029 | 3.10 |
+| spk30 | 9 | 4.15 | 0.076 | 5.44 |
 
 **Conclusions:**
-1. **Holistic Consistency:** By utilizing a progressive 3-level learning approach rather than completely isolated VQ components for different body parts, the HR-VQVAE maintains massive improvements in spatial accuracy (MPJPE ~32mm vs ~90mm). 
+1. **Holistic Consistency:** By utilizing a progressive 3-level learning approach rather than completely isolated VQ components for different body parts, the HR-VQVAE maintains massive improvements in spatial accuracy (MPJPE ~32mm vs ~90mm).
 2. **Generalization:** HR-VQVAE acts as a true, generalized pose tokenizer across the entire BEAT2 dataset.
-3. **Perceptual Realism:** The final generated motions from HR-VQVAE are perceptually much closer to the ground truth distribution (FGD 0.34 vs 2.72 on all-speaker test), with higher diversity and temporal coherence.
-4. **EMAGE Limitations:** The EMAGE architecture (PantoMatrix) struggles with the diversity of the all-speaker dataset, even when trained for 100 epochs. The isolated body-part codebooks and complex fusion mechanism may hinder convergence on heterogeneous multi-speaker data.
+3. **Perceptual Realism:** The final generated motions from HR-VQVAE are perceptually much closer to the ground truth distribution (FGD 0.34 vs 2.37 on all-speaker test), with higher diversity and temporal coherence.
+4. **EMAGE Limitations:** The EMAGE allspk model (FGD=2.37) significantly underperforms HR-VQVAE (FGD=0.34) across all speakers. BC is notably low (0.085 vs 0.435), suggesting the model struggles with audio-motion synchronization at scale. Per-speaker FGD varies widely (0.98–5.82), with spk2 performing best (likely benefiting from more balanced training data).
 
 ---
 
