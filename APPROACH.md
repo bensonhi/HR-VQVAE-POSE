@@ -223,6 +223,7 @@ Three component ablations on the full model (E2E perceptual spk2 FT, `vae_lean_d
 | w/o anchor prefix | 0.5183 ± 0.0113 | 0.6721 ± 0.0056 | 14.77 ± 0.13 |
 | w/o flow-matching prior (z ~ N(0,I)) | 0.7384 ± 0.0072 | 0.7681 ± 0.0025 | 9.94 ± 0.06 |
 | all-beat labels (no gesture-type info) | 0.4337 ± 0.0072 | 0.6926 ± 0.0054 | 14.54 ± 0.25 |
+| all-semantic labels | 0.5882 ± 0.0213 | 0.7019 ± 0.0062 | 15.99 ± 0.38 |
 | w/o E2E perceptual FT (allspk prior) | 0.5373 ± 0.0089 | 0.6791 ± 0.0039 | 15.10 ± 0.21 |
 
 ### Continuation Loss Ablation (VAE boundary smoothness)
@@ -244,7 +245,6 @@ Evaluated on speaker 2 test set (15 recordings) using autoregressive reconstruct
 - **Flow-matching prior** contributes +0.30 FGD (69% degradation) — the dominant component; without it the model outputs incoherent random-z motions
 - BC for no-prior is *higher* than the full model — random z produces over-animated motions that spuriously correlate with audio beats, but the overall gesture distribution (FGD) is far off
 - **E2E perceptual FT** contributes +0.10 FGD improvement (19% degradation without it, 0.5373 → 0.4374) — the spk2-specific FT meaningfully closes the gap between allspk and spk2 distribution
-- **Gesture-type conditioning (GT .sem)** provides negligible FGD benefit (0.4374 vs 0.4337 all-beat), despite gesture_type being architecturally wired into both the prior (`gesture_embed` added to audio conditioning) and the VAE decoder (`gesture_embed` added to AdaLN z_embed). The spk2 test set is 62.6% beat / 37.4% semantic so the split is non-trivial. Likely cause: `condition_dropout_prob` during VAE training prevents the decoder from strongly relying on gesture_type; FGD/BC E2E objectives provide no reward for gesture-semantic correctness
 
 ---
 
@@ -259,12 +259,14 @@ To validate the structural advantage of the HR-VQVAE architecture, a direct appl
 **Speaker 2 Test Set (15 recordings)**
 | Metric | HR-VQVAE (Spk2 FT) | EMAGE VQVAE (Pre-trained) | SynTalker RVQVAE (Official) |
 |---|---|---|---|
-| FGD ↓ | **0.269** | 0.4394 | 0.1660* |
+| FGD ↓ | **0.269** | 0.4394 | 0.1660 |
 | BC ↑ | 0.664 | **0.7853** | 0.6974 |
-| MPJPE (all) ↓ | **32.66 mm** | 90.55 mm | 54.81 mm* |
-| MPJPE body ↓ | **21.29 mm** | 54.74 mm | - |
+| MPJPE (all) ↓ | **32.66 mm** | 90.55 mm | 55.72 mm |
+| MPJPE body ↓ | **21.29 mm** | 54.74 mm | 24.49 mm |
+| MPJPE hands ↓ | **42.52 mm** | 120.19 mm | 79.62 mm |
+| MPJPE face ↓ | **17.54 mm** | - | 25.91 mm |
 
-*\*Note: SynTalker metrics calculated with zero global translation per their official protocol.*
+*SynTalker metrics evaluated using their official protocol: full-recording VQ encode/decode, 53 joints (excl. eyes), zero global translation, per-recording averaging. Their self-reported MPJPE is 54.81mm; our reproduction gives 55.72mm. Script: `evaluate_syntalker_final.py`.*
 
 **All-Speaker Test Set (265 recordings)**
 | Metric | HR-VQVAE (Allspk) | EMAGE VQVAE (Pre-trained) | SynTalker RVQVAE (Official) |
@@ -284,7 +286,6 @@ Evaluation of the full audio-to-pose generation on the Speaker 2 test set, compa
 | Model | FGD ↓ | BC ↑ | L1Div ↑ |
 |---|---|---|---|
 | **HR-VQVAE-POSE (Spk2 FT)** | **0.4374** | 0.6944 | 14.85 |
-| EMAGE (Official Pre-trained) | 0.6199 | **0.7567** | 12.48 |
 | EMAGE (Allspk, Ours) | 2.4169 | 0.4651 | **16.23** |
 
 **All-Speaker Test Set (265 recordings)**
@@ -386,10 +387,36 @@ Predicted `.txt` sem files saved to `planned_sem_fewshot/` and `planned_sem_lora
 | LLM few-shot (Qwen3.5-9B) | 0.4575 ± 0.0149 | 0.6906 ± 0.0059 | 14.69 ± 0.16 |
 | LLM LoRA fine-tuned | 0.4634 ± 0.0107 | 0.7132 ± 0.0065 | 15.15 ± 0.45 |
 
+### Planner Quality Metrics (vs. GT `.sem` labels, 15 spk2 test recordings)
+
+**Script:** `evaluate_planner.py`
+
+| Metric | Few-shot | LoRA fine-tuned |
+|---|---|---|
+| Per-frame accuracy ↑ | **75.0%** | 57.8% |
+| Macro-F1 (beat + semantic) ↑ | **52.1%** | 46.5% |
+|   Beat F1 | **84.4%** | 69.0% |
+|   Semantic F1 | 19.8% | **23.9%** |
+| Boundary F1 @0.5s ↑ | 19.1% | **35.1%** |
+|   Boundary Precision | **38.6%** | 27.6% |
+|   Boundary Recall | 15.4% | **62.9%** |
+
+**Diagnostics:**
+
+| Statistic | GT | Few-shot | LoRA |
+|---|---|---|---|
+| Semantic ratio | 21.1% | 11.3% | 37.4% |
+| Segment count | 21.8 | 12.5 | 48.8 |
+| Mean segment duration | 4.9s | 7.8s | 1.5s |
+| Boundary count | 21.3 | 11.6 | 48.0 |
+
 ### Observations
+- **Few-shot** is conservative: high accuracy (75%) from defaulting to beat, but misses most semantic boundaries (boundary recall 15.4%, semantic F1 19.8%). Under-predicts semantic ratio (11% vs GT 21%).
+- **LoRA** over-segments: better boundary detection (boundary F1 35.1%, recall 62.9%) and slightly better semantic F1 (23.9%), but produces ~2× too many segments and over-predicts semantic (37% vs GT 21%).
+- Neither planner significantly hurts downstream generation: few-shot FGD +0.020, LoRA FGD +0.026 vs GT labels — because the model's gesture-type conditioning has limited effect on the majority-beat spk2 distribution.
 - LLM few-shot labels produce FGD 0.4575 vs. GT 0.4374 — only +0.020 degradation.
 - LLM LoRA labels produce FGD 0.4634 vs. GT 0.4374 — +0.026 degradation, slightly worse than few-shot.
-- The near-zero benefit of gesture-type conditioning (GT vs. all-beat: −0.004 FGD) means LLM planner errors have limited impact; the model relies mainly on audio features.
+- Gesture-type conditioning is functional (all-semantic FGD=0.588 vs all-beat FGD=0.434), but since 62.6% of spk2 chunks are beat, the all-beat baseline is near-optimal. LLM planners that over-predict semantic (LoRA: fine-grained per-word labels) incur a small penalty (+0.026 FGD vs GT), while few-shot coarser labels only add +0.020.
 - LoRA planner generates per-word annotations (~42 lines/recording = 21 seg pairs) vs. few-shot phrase-level (~6 lines/recording = 3 seg pairs). The fine-grained LoRA labels do not improve over coarser few-shot labels.
 - BC is higher for LoRA (0.713) vs. GT (0.694) and fewshot (0.691) — more semantic gesture labels may slightly improve beat alignment despite worse FGD.
 
