@@ -318,6 +318,7 @@ Evaluation of the full audio-to-pose generation on the Speaker 2 test set, compa
 | Model | FGD ↓ | BC ↑ | L1Div ↑ |
 |---|---|---|---|
 | **HR-VQVAE-POSE (Allspk)** | **0.3416** | **0.4348** | **9.31** |
+| SynTalker (Allspk, Ours, ep500) | 2.0605 | 0.6154 | 8.51 |
 | EMAGE (Official Pre-trained) | 2.5122 | 0.2811 | 7.95 |
 | EMAGE (Allspk, Ours) | 2.7199 | 0.3039 | 8.42 |
 
