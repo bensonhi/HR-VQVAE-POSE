@@ -630,12 +630,13 @@ chunks of at most 150 frames (5 seconds at 30\,fps), with a minimum
 of 5 frames.
 Chunks are generated left-to-right:
 \begin{enumerate}
+\item Build the anchor prefix from the previous chunk's last
+      $K\!=\!90$ decoded frames and the corresponding audio slice.
 \item Sample latent $\mathbf{z}_n$ from the flow-matching prior
       (Section~\ref{sec:prior}) conditioned on the chunk's audio,
-      speaker, and gesture type.
-\item Build the anchor prefix from the previous chunk's last
-      $K\!=\!90$ frames and their audio.
-\item Decode chunk $n$ with the temporal VAE decoder.
+      speaker, gesture type, and the anchor prefix.
+\item Decode chunk $n$ with the temporal VAE decoder, conditioned on
+      $\mathbf{z}_n$, audio, and the anchor prefix.
 \item Optionally apply a cosine cross-fade over the overlap and a
       Gaussian post-smooth limited to the first few blend frames to
       further suppress any residual seam artifact.
@@ -655,16 +656,19 @@ We replace the standard Gaussian prior with a conditional
 $p(\mathbf{z} \mid \mathbf{a}, s, g)$.
 
 \paragraph{Architecture.}
-A temporal audio encoder (Transformer over Wav2Vec features, followed
-by a strided 1-D convolution matching the VAE's stride $r\!=\!8$)
-produces a per-token audio context
-$\mathbf{c}_{1:T'} \in \mathbb{R}^{T' \times d_\text{model}}$, with
-speaker and gesture-type embeddings broadcast-added.
+A temporal audio encoder produces a per-token audio context
+$\mathbf{c}_{1:T'} \in \mathbb{R}^{T' \times d_\text{model}}$: Wav2Vec
+features are projected to $d_\text{model}$, the speaker, gesture-type,
+and (when available) anchor-prefix conditioning vectors are
+broadcast-added across time, the sequence is passed through a
+Transformer trunk with sinusoidal positional encoding, and a
+strided 1-D convolution (stride $r\!=\!8$, matching the VAE) yields
+the $T'$-token output.
 A Transformer velocity field $v_\theta(\mathbf{z}_t, t, \mathbf{c})$
-denoises the latent token sequence $\mathbf{z}_{1:T'}$, conditioning
-on the flow time $t \in [0, 1]$ through zero-initialized
-DiT-style~\cite{dit} AdaLN modulation, and on the audio context
-through cross-attention.
+then denoises the latent token sequence $\mathbf{z}_{1:T'}$,
+conditioning on the flow time $t \in [0, 1]$ through zero-initialized
+DiT-style~\cite{dit} AdaLN modulation of the self-attention and FFN
+layer norms, and on the audio context through cross-attention.
 
 \paragraph{VAE decoder fine-tuning.}
 The VAE is first trained on all 25 speakers.
