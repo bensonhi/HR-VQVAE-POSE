@@ -695,15 +695,23 @@ covariance term in the FGD feature space:
   \bigl\|\boldsymbol{\Sigma}_\text{pred} - \boldsymbol{\Sigma}_\text{gt}
   \bigr\|_F^2.
 \end{equation*}
-Gradients flow through a small number of differentiable Euler steps of
-the prior, then through the frozen decoder.
+To obtain a clean latent for the perceptual losses, we apply the
+predicted-$z^*$ trick during training: given the sampled
+$(\mathbf{z}_t, t)$ pair and the velocity prediction $v_\theta$, we
+form
+$\hat{\mathbf{z}}^* = \mathbf{z}_t + (1-t)\,v_\theta(\mathbf{z}_t, t, \mathbf{c})$,
+which is a fully differentiable one-step estimate of the clean latent
+endpoint along the rectified-flow path.
+This estimate is then decoded through the frozen VAE decoder, and
+gradients from the perceptual losses propagate back to $\theta$.
 We use $\lambda_\text{fgd}\!=\!0.01$, $\lambda_\text{beat}\!=\!0.1$,
 $\lambda_\text{cov}\!=\!1.0$, and $\text{lr}\!=\!10^{-5}$.
 
 \paragraph{Sampling.}
 Starting from $\boldsymbol{\varepsilon} \sim \mathcal{N}(\mathbf{0},\mathbf{I})$,
-we integrate $v_\theta$ with Euler's method over $N\!=\!50$ steps to obtain $\mathbf{z}$,
-which is then passed to the VAE decoder.
+we integrate $v_\theta$ from $t\!=\!0$ to $t\!=\!1$ with the midpoint
+method over $N\!=\!50$ steps to obtain $\mathbf{z}$, which is then
+passed to the VAE decoder.
 A guidance scale $g$ (selected on the validation set; $g\!=\!0.5$ in our
 final evaluation) controls the trade-off between fidelity and diversity.
 
@@ -1263,7 +1271,8 @@ Our evaluation is restricted to the BEAT2 corpus; we have not tested
 generalization to other gesture datasets or to in-the-wild speech, and
 gesture conventions may differ across languages and cultures
 beyond what BEAT2 covers.
-Generation runs offline through a $50$-step Euler integration of the
+Generation runs offline through a $50$-step midpoint-method ODE
+integration of the
 flow-matching prior plus an autoregressive decoder; we have not
 characterized real-time performance.
 The body-part hierarchy is hand-designed (face / body / hands) rather
