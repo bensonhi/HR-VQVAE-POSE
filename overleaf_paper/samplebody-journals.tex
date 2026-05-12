@@ -32,9 +32,9 @@ TalkSHOW~\cite{talkshow2023} pairs a compositional VQ-VAE for body and
 hands with a Gated PixelCNN autoregressive prior; EMAGE~\cite{emage2024}
 trains masked audio-gesture transformers over four compositional
 VQ-VAE tokenizers; GestureDiffuCLIP~\cite{gesturediffuclip} runs latent
-diffusion over a VQ-VAE-quantized gesture latent; and SynTalker~\cite{syntalker}
+diffusion in a VQ-VAE-pretrained gesture latent space; and SynTalker~\cite{syntalker}
 trains a residual VQ-VAE motion tokenizer and runs latent diffusion
-over its codes for prompt-conditioned full-body motion.
+in its latent space for prompt-conditioned full-body motion.
 Outside the gesture domain, recent text-driven human motion synthesis
 ranges from continuous-space diffusion such as
 MDM~\cite{mdm} to VQ-based token generation, frequently trained on
@@ -155,8 +155,8 @@ DiffuseStyleGesture~\cite{diffusestylegesture2023} runs a diffusion
 model directly in continuous pose space with classifier-free guidance,
 producing stylized output but relying on initial-frame conditioning
 rather than a learned boundary objective for chunk-to-chunk continuity.
-GestureDiffuCLIP~\cite{gesturediffuclip} runs latent diffusion over
-a VQ-VAE-quantized gesture latent with CLIP-based style control,
+GestureDiffuCLIP~\cite{gesturediffuclip} runs latent diffusion in
+a VQ-VAE-pretrained gesture latent space with CLIP-based style control,
 demonstrating that VQ-then-diffusion pipelines can produce stylized
 co-speech motion.
 EMAGE~\cite{emage2024} introduces masked audio-gesture modeling for
@@ -1161,11 +1161,10 @@ protocol; SynTalker is evaluated under its own full-recording protocol
 (53 joints, zero global translation) since its non-chunked encoding
 makes a uniform protocol infeasible.
 On the standard Speaker~2 test set, our continuous-latent VAE achieves
-the lowest joint error across body, hands, and face, with overall
-MPJPE about $1.7{\times}$ lower than the next-best VQ baseline
-(SynTalker) and $2.8{\times}$ lower than EMAGE; SynTalker's RVQ-VAE
-achieves lower FGD than our VAE on this set, but considerably higher
-joint error.
+the lowest joint error on both body and hands, with overall MPJPE
+about $1.7{\times}$ lower than the next-best VQ baseline (SynTalker)
+and $2.8{\times}$ lower than EMAGE; SynTalker's RVQ-VAE achieves lower
+FGD than our VAE on this set, but considerably higher joint error.
 On the full 25-speaker test set the gap widens substantially:
 both VQ baselines were trained on Speaker~2 alone and degrade sharply
 outside their training distribution, while a single all-speaker
@@ -1196,7 +1195,6 @@ FGD $\downarrow$         & 4.394 & \textbf{1.66} & 3.232 & 2.69 \\
 MPJPE (all) $\downarrow$ & 90.55 & 55.72 & 34.84 & \textbf{32.66} \\
 MPJPE body $\downarrow$  & 54.74 & 24.49 & 22.76 & \textbf{21.29} \\
 MPJPE hands $\downarrow$ & 120.19 & 79.62 & 45.35 & \textbf{42.52} \\
-MPJPE face $\downarrow$  & ---    & 25.91 & 18.45 & \textbf{17.54} \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -1220,7 +1218,6 @@ FGD $\downarrow$         & 21.32  & 18.58  & \textbf{1.94} \\
 MPJPE (all) $\downarrow$ & 112.25 & 113.66 & \textbf{26.03} \\
 MPJPE body $\downarrow$  & 71.55  & 55.57  & \textbf{17.71} \\
 MPJPE hands $\downarrow$ & 145.22 & 157.72 & \textbf{33.36} \\
-MPJPE face $\downarrow$  & 35.12  & 70.16  & \textbf{13.32} \\
 \bottomrule
 \end{tabular}
 \end{table}
