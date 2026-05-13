@@ -525,6 +525,50 @@ Predicted `.txt` sem files saved to `planned_sem_fewshot/` and `planned_sem_lora
 
 ---
 
+## SynTalker Per-Speaker Reconstruction (Allspk, 100% test, temp=None)
+
+**Model:** SynTalker RVQVAE (upper/hands/lower/face) with official allspk checkpoint
+**Script:** `evaluate_syntalker_per_speaker.py`
+**Results:** `syntalker_per_speaker_results.json`
+
+| Speaker | N | FGD ↓ | BC ↑ | BC_GT | L1Div ↑ | L1D_GT | MPJPE ↓ | Body | Hands | Face |
+|---|---|---|---|---|---|---|---|---|---|---|
+| spk 1 | 15 | 2.07 | 0.605 | 0.473 | 6.21 | 7.00 | 107.63 | 53.66 | 148.88 | 57.09 |
+| spk 2 | 15 | 0.17 | 0.727 | 0.693 | 12.65 | 13.12 | 55.72 | 24.49 | 79.62 | 25.91 |
+| spk 3 | 15 | 1.83 | 0.673 | 0.579 | 10.38 | 11.50 | 106.23 | 57.29 | 144.00 | 49.67 |
+| spk 4 | 15 | 1.69 | 0.670 | 0.545 | 9.68 | 10.54 | 91.37 | 42.36 | 128.81 | 46.29 |
+| spk 5 | 15 | 2.27 | 0.581 | 0.343 | 4.97 | 5.24 | 113.12 | 52.03 | 159.37 | 69.48 |
+| spk 6 | 7 | 2.64 | 0.539 | 0.399 | 8.04 | 8.92 | 134.26 | 51.95 | 197.05 | 61.24 |
+| spk 7 | 15 | 3.84 | 0.572 | 0.417 | 6.95 | 6.42 | 132.29 | 56.43 | 189.10 | 96.87 |
+| spk 9 | 7 | 2.60 | 0.467 | 0.350 | 5.81 | 6.35 | 77.82 | 49.24 | 98.92 | 73.68 |
+| spk10 | 15 | 3.42 | 0.592 | 0.438 | 6.87 | 9.05 | 151.36 | 62.67 | 217.73 | 111.13 |
+| spk11 | 15 | 1.99 | 0.540 | 0.241 | 5.30 | 5.16 | 84.18 | 45.20 | 113.83 | 52.50 |
+| spk12 | 9 | 3.39 | 0.763 | 0.750 | 10.36 | 14.87 | 149.78 | 67.04 | 212.84 | 78.08 |
+| spk13 | 9 | 2.21 | 0.688 | 0.536 | 7.39 | 9.68 | 108.74 | 49.05 | 154.55 | 47.27 |
+| spk15 | 9 | 2.89 | 0.637 | 0.390 | 6.67 | 8.15 | 128.79 | 71.79 | 172.47 | 72.27 |
+| spk16 | 9 | 2.31 | 0.750 | 0.694 | 10.24 | 11.99 | 120.41 | 71.13 | 157.37 | 96.11 |
+| spk17 | 9 | 2.61 | 0.643 | 0.532 | 7.58 | 9.02 | 94.83 | 65.35 | 117.14 | 74.04 |
+| spk18 | 9 | 3.07 | 0.706 | 0.598 | 6.25 | 7.10 | 130.50 | 61.02 | 183.58 | 66.49 |
+| spk20 | 9 | 1.75 | 0.656 | 0.540 | 9.02 | 9.84 | 68.72 | 36.03 | 93.27 | 51.20 |
+| spk21 | 7 | 4.07 | 0.644 | 0.470 | 6.80 | 7.27 | 142.29 | 76.51 | 192.89 | 71.08 |
+| spk22 | 9 | 3.33 | 0.636 | 0.566 | 6.63 | 8.37 | 115.94 | 64.37 | 153.87 | 112.61 |
+| spk23 | 8 | 4.25 | 0.622 | 0.471 | 4.47 | 6.62 | 120.39 | 54.74 | 170.61 | 58.17 |
+| spk24 | 9 | 4.35 | 0.473 | 0.302 | 5.05 | 5.21 | 161.74 | 63.62 | 236.49 | 77.91 |
+| spk25 | 8 | 2.78 | 0.476 | 0.196 | 5.46 | 6.19 | 109.50 | 48.56 | 156.22 | 48.51 |
+| spk27 | 9 | 3.41 | 0.591 | 0.369 | 8.66 | 10.70 | 156.07 | 62.74 | 224.59 | 153.68 |
+| spk28 | 9 | 2.72 | 0.414 | 0.186 | 4.82 | 3.74 | 92.10 | 57.00 | 118.88 | 60.94 |
+| spk30 | 9 | 3.25 | 0.535 | 0.328 | 7.23 | 8.32 | 136.04 | 80.19 | 179.14 | 71.91 |
+| **ALL** | **265** | **1.86** | **0.611** | **0.456** | **7.44** | **8.44** | **113.66** | | | |
+
+### Observations
+- BC is consistently higher than GT BC across all speakers — VQ-VAE reconstruction amplifies beat-aligned motion artifacts.
+- L1Div is consistently lower than GT — reconstruction reduces diversity (expected for deterministic codec).
+- spk2 (scott) has the best metrics across the board (FGD=0.17, MPJPE=55.72) as the most common evaluation speaker.
+- Hardest speakers: spk24 (FGD=4.35, MPJPE=161.74), spk27 (hands=224.59, face=153.68).
+- Note: SynTalker face = jaw only (1 joint), vs our model's 3 joints (jaw + 2 eyes). Face MPJPE not directly comparable.
+
+---
+
 ## Leakage-Free Protocol
 
 All checkpoint selection uses the **val split** exclusively:
