@@ -1,16 +1,17 @@
 \documentclass[sigconf,anonymous,review]{acmart}
-\acmSubmissionID{1234}
+\acmSubmissionID{2731}
+
 
 \usepackage{booktabs} % For formal tables
+\graphicspath{{figures/}}
 
-% Allow extra inter-word stretch to avoid overfull hboxes from long
-% hyphenated terms (e.g. "anchor-prefix", "channel-wise") in the tight
-% two-column sigconf layout.
+\usepackage{enumitem}
+
+% Allow extra inter-word stretch to avoid overfull hboxes from long hyphenated terms (e.g. "anchor-prefix", "channel-wise") in the tight two-column sigconf layout.
 \emergencystretch=4em
 \tolerance=2000
 
-% Hint hyphenation for compound words frequently used in our prose so
-% they break across column boundaries.
+% Hint hyphenation for compound words frequently used in our prose so they break across column boundaries.
 \hyphenation{
   channel-wise
   body-part-hier-ar-chi-cal
@@ -25,11 +26,12 @@
 
 % TOG prefers author-name bib system with square brackets
 \citestyle{acmauthoryear}
-%\setcitestyle{nosort,square} % nosort to allow for manual chronological ordering
 
+% nosort to allow for manual chronological ordering
+%\setcitestyle{nosort,square}
 
-
-\usepackage[ruled]{algorithm2e} % For algorithms
+% For algorithms
+\usepackage[ruled]{algorithm2e}
 \renewcommand{\algorithmcfname}{ALGORITHM}
 \SetAlFnt{\small}
 \SetAlCapFnt{\small}
@@ -38,16 +40,14 @@
 
 % TikZ for architecture diagrams
 \usepackage{tikz}
-\usetikzlibrary{positioning, fit, backgrounds, arrows.meta, calc,
-                shapes.geometric, decorations.pathmorphing,
-                shadings, shadows.blur}
+\usetikzlibrary{positioning, fit, backgrounds, arrows.meta, calc, shapes.geometric, decorations.pathmorphing, shadings, shadows.blur}
 
 % Semantic colors used across architecture figure
-\definecolor{cPlanner}{HTML}{4A6FA5}    % muted blue
+\definecolor{cPlanner}{HTML}{4A6FA5} % muted blue
 \definecolor{cPlannerBG}{HTML}{EDF1F8}
-\definecolor{cVAE}{HTML}{6C4F9C}        % muted purple
+\definecolor{cVAE}{HTML}{6C4F9C} % muted purple
 \definecolor{cVAEBG}{HTML}{F1ECF7}
-\definecolor{cLong}{HTML}{C46A3F}       % warm terracotta
+\definecolor{cLong}{HTML}{C46A3F} % warm terracotta
 \definecolor{cLongBG}{HTML}{F8EFE5}
 \definecolor{cFace}{HTML}{D17B6E}
 \definecolor{cBody}{HTML}{6FA8A3}
@@ -56,8 +56,7 @@
 \definecolor{cLoss}{HTML}{B23B3B}
 
 % Metadata Information
-% (sigconf mode for SIGGRAPH/SIGGRAPH Asia conference proceedings;
-% remove or update \acmConference details for the targeted venue)
+% (sigconf mode for SIGGRAPH/SIGGRAPH Asia conference proceedings; remove or update \acmConference details for the targeted venue)
 %\acmConference[SIGGRAPH '26]{ACM SIGGRAPH 2026 Conference Proceedings}{August 09--13, 2026}{Vancouver, Canada}
 
 % Copyright
@@ -78,13 +77,13 @@
 %\received[final version]{June 2009}
 %\received[accepted]{July 2009}
 
-
 % Document starts
 \begin{document}
+
 % Title portion
 \title{GestureCraft: Planning and Synthesizing Full-Body Co-Speech Gestures from Speech}
 
-% DO NOT ENTER AUTHOR INFORMATION FOR ANONYMOUS TECHNICAL PAPER SUBMISSIONS TO SIGGRAPH 2019!
+% DO NOT ENTER AUTHOR INFORMATION FOR ANONYMOUS TECHNICAL PAPER SUBMISSIONS TO SIGGRAPH
 %\author{Gang Zhou}
 %\orcid{1234-5678-9012-3456}
 %\affiliation{%
@@ -153,80 +152,49 @@
 %\renewcommand\shortauthors{Zhou, G. et al}
 
 \begin{abstract}
-Believable digital humans require co-speech gestures that are temporally
-aligned with speech, semantically meaningful, and smoothly coordinated
-across face, body, and hands---yet existing methods fall short on
-long-form coherence and generalization. Discrete motion codebooks
-introduce artifacts in continuous pose space, lack explicit mechanisms
-for kinematic continuity, and are typically evaluated on single
-speakers. We present GestureCraft, a planning-and-generation framework
-for synthesizing full-body SMPL-X gestures directly from speech. Our
-model centers on a body-part-hierarchical Transformer VAE with a
-continuous latent space partitioned into face, body, and hand
-slices, each supervised by partial-output decoding losses on its
-assigned body part. A conditional
-flow-matching prior generates this latent conditioned on audio, speaker
-identity, and gesture type. To support long-form generation, we
-introduce anchor-prefix conditioning with a continuation velocity loss
-that enforces smooth transitions across chunk boundaries. A fine-tuned
-large language model plans gesture-type segments from transcripts,
-eliminating the need for dataset-specific annotations at inference.
-Trained on multi-speaker BEAT2, GestureCraft achieves state-of-the-art
-performance and demonstrates cross-speaker generalization under the
-standard evaluation protocol.
+Generating natural co-speech gestures requires precise temporal alignment, semantic relevance, and seamless coordination between the face, body, and hands.
+Current methods often struggle with long-form coherence and fail to generalize across different speakers.
+We introduce GestureCraft, a hierarchical framework for synthesizing full-body SMPL-X gestures directly from speech.
+Our architecture utilizes a Transformer VAE with a continuous latent space partitioned into distinct slices for the face, body, and hands.
+This structure is supervised by part-specific decoding losses to ensure kinematic integrity.
+To generate high-fidelity motion, we employ a conditional flow-matching prior that integrates speaker speech, identity, and gesture intent.
+We maintain long-term stability through anchor-prefix conditioning and continuation velocity loss, which enforces smoothness across sequence boundaries.
+Furthermore, we leverage a fine-tuned LLM to plan gesture segments from speaker transcripts.
+Evaluated on the BEAT2 dataset, GestureCraft achieves state-of-the-art performance and demonstrates robust cross-speaker generalization.
 \end{abstract}
 
-
 %
-% The code below should be generated by the tool at
-% http://dl.acm.org/ccs.cfm
+% The code below should be generated by the tool at http://dl.acm.org/ccs.cfm
 % Please copy and paste the code instead of the example below.
 %
 \begin{CCSXML}
 <ccs2012>
- <concept>
-  <concept_id>10010147.10010371.10010396.10010402</concept_id>
-  <concept_desc>Computing methodologies~Animation</concept_desc>
-  <concept_significance>500</concept_significance>
- </concept>
- <concept>
-  <concept_id>10010147.10010178.10010224.10010240.10010241</concept_id>
-  <concept_desc>Computing methodologies~Motion capture</concept_desc>
-  <concept_significance>300</concept_significance>
- </concept>
- <concept>
-  <concept_id>10010147.10010257.10010258.10010259.10010263</concept_id>
-  <concept_desc>Computing methodologies~Supervised learning by regression</concept_desc>
-  <concept_significance>300</concept_significance>
- </concept>
- <concept>
-  <concept_id>10010147.10010178.10010179.10003352</concept_id>
-  <concept_desc>Computing methodologies~Natural language generation</concept_desc>
-  <concept_significance>100</concept_significance>
- </concept>
+  <concept>
+    <concept_id>10010147.10010371.10010352</concept_id>
+    <concept_desc>Computing methodologies~Animation</concept_desc>
+    <concept_significance>300</concept_significance>
+  </concept>
+  <concept>
+    <concept_id>10010147.10010371.10010352.10010380</concept_id>
+    <concept_desc>Computing methodologies~Motion processing</concept_desc>
+    <concept_significance>300</concept_significance>
+  </concept>
+  <concept>
+    <concept_id>10010147.10010257.10010293.10010294</concept_id>
+    <concept_desc>Computing methodologies~Neural networks</concept_desc>
+    <concept_significance>300</concept_significance>
+  </concept>
 </ccs2012>
 \end{CCSXML}
 
-\ccsdesc[500]{Computing methodologies~Animation}
-\ccsdesc[300]{Computing methodologies~Motion capture}
-\ccsdesc[300]{Computing methodologies~Supervised learning by regression}
-\ccsdesc[100]{Computing methodologies~Natural language generation}
+\ccsdesc[300]{Computing methodologies~Animation}
+\ccsdesc[300]{Computing methodologies~Motion processing}
+\ccsdesc[300]{Computing methodologies~Neural networks}
 
-%
-% End generated code
-%
-
-
-\keywords{Co-speech gesture generation, full-body motion synthesis,
-SMPL-X, variational autoencoder, flow matching, large language models,
-character animation}
-
-
+\keywords{Co-speech gesture generation, variational autoencoder, flow matching, large language model}
 
 \maketitle
 
 \input{samplebody-journals}
-
-
 
 \end{document}

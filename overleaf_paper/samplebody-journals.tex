@@ -1,125 +1,37 @@
 % ======================================================================
 % SECTION: Introduction
 % ======================================================================
-
 \section{Introduction}
 \label{sec:intro}
+Expressive 3D human avatars, represented using parametric body models such as SMPL-X~\cite{smplx}, have broad applications in interactive entertainment, embodied conversational agents, and immersive telepresence.
+However, automatically generating full-body avatar animation conditioned on speech remains a fundamentally difficult problem.
+Beyond generation itself, producing motion that appears natural is equally challenging: the face, hands, and body must move in precise synchrony with the rhythm, prosody, and meaning of speech.
+Achieving this coherent, speech-driven full-body coordination is a long-standing open problem in computer graphics and animation~\cite{mcneill1992hand,s2g,beat,emage2024}.
+Progress in generating 3D human avatars conditioned on speech has grown with the release of large scale motion capture datasets such as BEAT and BEAT2~\cite{beat,emage2024}.
+However, despite this progress, several limitations remain.
 
-Believable digital characters are increasingly central to interactive
-entertainment, embodied conversational agents, and immersive
-telepresence.
-A defining property of such characters is that the body
-\emph{moves with speech}: face, body, and hands articulate in synchrony
-with prosody and meaning, conveying intent that text alone cannot.
-Generating such co-speech gestures automatically---given only audio,
-without intervening motion capture---would lift a major bottleneck for
-character animation pipelines, and is a long-standing problem in
-computer graphics~\cite{mcneill1992hand,s2g,beat,emage2024}.
+First, recent methods~\cite{talkshow2023,gesturediffuclip,syntalker} rely on Vector Quantized Variational Autoencoders (VQ-VAE)~\cite{vqvae,vqvae2} to discretize continuous motion into codebook tokens.
+While this simplifies modeling, it introduces quantization artifacts.
+Since human motion is continuous, mapping it to discrete tokens can cause abrupt transitions when switching between codewords, resulting in visible joint snapping and reduced smoothness.
+Second, generating long sequences of avatar motion remains a challenge.
+Prior models are trained on short, fixed length clips and do not naturally generalize to extended recordings.
+Existing strategies such as seed frame conditioning or post hoc smoothing attempt to mitigate boundary artifacts, but they do not explicitly train the model to enforce kinematic continuity across segment boundaries.
+Third, previous methods depend on gesture type labels provided by specific datasets such as BEAT2.
+This dependence limits applicability to datasets without such annotations.
+Since manual labeling is expensive and time consuming, an automated method for generating pseudo labels is desirable.
+Lastly, although BEAT2 contains recordings from 25 speakers, previous studies predominantly report performance on a single speaker, typically Speaker~2~\cite{emage2024,syntalker}.
+This raises concerns about the generalizability of existing models.
 
-Recent years have seen rapid progress on this problem, driven by the
-advent of mesh-level parametric body models such as
-SMPL-X~\cite{smplx}---a unified body model whose 55 articulated
-joints (body, hands, jaw, eyes) yield a $165$-dimensional axis-angle
-pose vector, augmented with separate parameters for facial
-expression---and the release of large-scale motion-captured gesture
-corpora such as BEAT and BEAT2~\cite{beat,emage2024}.
-On top of these substrates, the strongest current methods rely on a
-common recipe: a vector-quantized autoencoder~\cite{vqvae,vqvae2}
-that discretizes motion into codebook tokens, followed by an
-autoregressive or diffusion-based prior over those tokens conditioned
-on speech.
-TalkSHOW~\cite{talkshow2023} pairs a compositional VQ-VAE for body and
-hands with a Gated PixelCNN autoregressive prior; EMAGE~\cite{emage2024}
-trains masked audio-gesture transformers over four compositional
-VQ-VAE tokenizers; GestureDiffuCLIP~\cite{gesturediffuclip} runs latent
-diffusion in a VQ-VAE-pretrained gesture latent space; and SynTalker~\cite{syntalker}
-trains a residual VQ-VAE motion tokenizer and runs latent diffusion
-in its latent space for prompt-conditioned full-body motion.
-Outside the gesture domain, recent text-driven human motion synthesis
-ranges from continuous-space diffusion such as
-MDM~\cite{mdm} to VQ-based token generation, frequently trained on
-HumanML3D~\cite{humanml3d}.
+To address these gaps, we present \textbf{GestureCraft}, a speech to motion framework.
+Our contributions are summarized as follows:
 
-Three open problems still hold the field back.
-First, \emph{quantization artifacts.}
-SMPL-X pose lives in a continuous, high-dimensional space, where even
-small errors propagate along the kinematic chain and produce visible
-joint snapping or unnatural pauses.
-Discrete codebooks are an awkward fit: codeword boundaries become
-discontinuities in the decoded motion.
-Second, \emph{long-form coherence.}
-Training clips are typically short fixed-length windows, and the
-resulting models do not natively scale to multi-minute speech.
-Existing methods chain successive windows through seed-frame
-conditioning or post-hoc smoothing, but none train the decoder
-explicitly for kinematic continuity at chunk boundaries.
-Third, \emph{cross-speaker generalization.}
-Despite the BEAT2 corpus containing recordings from $25$ speakers, all
-recent published numbers on this benchmark report results from a
-\emph{single speaker} (Speaker~2)~\cite{emage2024,syntalker}, leaving
-the field's claims about deployable gesture synthesis essentially
-unverified across speaker styles.
-
-We present \textbf{GestureCraft}, an audio-to-motion framework that
-addresses all three problems within a single pipeline.
-Our central design choice is to replace the discrete codebook with a
-\emph{continuous, body-part-hierarchical} Gaussian latent: a
-temporally downsampled sequence of $d_z\!=\!16$-dimensional tokens,
-each partitioned channel-wise into face, body, and hand slices, with
-per-level partial-output supervision that drives each slice to
-specialize on its assigned body part, learned through a
-Transformer~\cite{transformer} encoder-decoder VAE.
-Long-form motion is supported by an \emph{anchor-prefix} conditioning
-mechanism paired with a \emph{continuation velocity loss} that
-explicitly trains the decoder for velocity continuity at chunk
-boundaries.
-A conditional flow-matching prior~\cite{lipman2023flow,rectifiedflow}
-over the continuous latent is pretrained on all $25$ BEAT2 speakers and
-fine-tuned end-to-end with perceptual losses---an FGD~\cite{trimodal,fid}
-moment-matching term (mean and covariance in feature space) and a
-beat-alignment term.
-Finally, a LoRA-fine-tuned~\cite{lora2022} Qwen3.5-9B~\cite{qwen3}
-gesture-type planner produces per-segment gesture-type
-labels~\cite{mcneill1992hand} from raw transcripts, removing the
-inference-time dependency on dataset-specific annotations.
-
-We summarize our contributions as follows:
-\begin{itemize}
-\item A \textbf{body-part-hierarchical continuous VAE} for SMPL-X
-      gesture motion, replacing the discrete codebooks of prior
-      methods with a channel-wise factorized Gaussian latent that
-      reconstructs joint position with up to $2.8{\times}$ lower
-      error than the released VQ tokenizers of two leading
-      systems~\cite{emage2024,syntalker} on the standard Speaker~2
-      benchmark and roughly $4{\times}$ lower error on the full
-      $25$-speaker corpus.
-\item \textbf{Anchor-prefix conditioning with a continuation velocity
-      loss}, a learned objective that approximately halves boundary
-      velocity error and boundary jerk relative to a no-continuation
-      baseline, enabling seamless chunked autoregression at
-      arbitrary recording lengths.
-\item A \textbf{fine-tuned LLM gesture-type planner} that converts
-      raw transcripts into BEAT2-style gesture-type segmentations,
-      preserving downstream generation quality while removing the
-      inference-time dependency on dataset-specific
-      annotations.
-\item A \textbf{cross-speaker generalization study} that, to our
-      knowledge, is the first to report results on the full BEAT2
-      25-speaker test set under the standard evaluation protocol;
-      we outperform re-trained VQ baselines by close to an order of
-      magnitude on FGD without sacrificing per-speaker quality on
-      Speaker~2.
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Hierarchical VAE.} In our framework, the VAE operates in a continuous latent space, which avoids quantization artifacts. We introduce a hierarchical design in which the latent representation is partitioned into face, body, and hand components. Each component is trained with a partial reconstruction objective, encouraging specialization and improving local motion quality. In addition, a global reconstruction objective ensures synchronization and coherence across all parts of the body.
+    \item \textbf{Anchor-conditioned decoder.} We introduce anchor prefix conditioning to enable smooth chunked generation, where each segment is conditioned on the final frames of the previous chunk to preserve temporal continuity. To further improve boundary consistency, we propose a continuation velocity loss that explicitly penalizes velocity discrepancies across chunk boundaries.
+    \item \textbf{LLM-based gesture type planner.}
+    We introduce a finetuned Large Language Model (LLM) that predicts BEAT2 style gesture type annotations from raw speech transcripts, i.e., the planner generates temporal segments that specify when beat or semantic gestures should occur. By generating these annotations automatically, our framework preserves downstream motion quality while removing the need for gesture labels during inference.
+    \item \textbf{Cross speaker generalization.} Existing studies evaluate only on Speaker~2 in the BEAT2 dataset. In contrast, we evaluate our model on the full 25-speakers BEAT2 test set to assess its robustness and generalization across speakers.
 \end{itemize}
-
-The remainder of the paper is organized as follows.
-Section~\ref{sec:related} reviews prior work on co-speech gesture
-generation, hierarchical latents, flow-matching priors, and LLM-driven
-motion planning.
-Section~\ref{sec:method} describes the GestureCraft pipeline in
-detail.
-Section~\ref{sec:experiments} reports quantitative comparisons,
-cross-speaker generalization, ablations of each pipeline component,
-and an evaluation of the LLM planner.
 
 % ======================================================================
 % SECTION: Related Work
@@ -127,136 +39,41 @@ and an evaluation of the LLM planner.
 
 \section{Related Work}
 \label{sec:related}
+\noindent \textbf{Co-speech gesture generation.}
+% \citet{mcneill1992hand} established a foundational taxonomy of co speech gestures by distinguishing between beat gestures and semantic gestures. Beat gestures are rhythmic movements that align with speech prosody and provide emphasis without conveying semantic meaning. In contrast, semantic gestures, including iconic and metaphoric forms, visually represent the content of speech.
+Early approaches to 3D human avatar motion generation learn mappings from speech features to skeletal joint rotations using RNNs or CNNs~\cite{s2g,trimodal,ha2g,habibie}, with most methods restricted to motion only of the upper body or the hand.
+To address this limitation, more recent work has extended these methods to full-body SMPL-X generation and adopted more modern architectures.
+TalkSHOW~\cite{talkshow2023} generates holistic body motion from speech using a compositional VQ-VAE for body and hand motion together with a Gated PixelCNN autoregressive prior over codebook indices.
+While this model can produce long form motion, its quality depends on rollout stability since it does not explicitly enforce boundary continuity.
+GestureDiffuCLIP~\cite{gesturediffuclip} runs latent diffusion in a VQ-VAE pretrained gesture latent space with CLIP-based style control, demonstrating that VQ-then-diffusion pipelines can produce stylized co-speech motion.
+DiffuseStyleGesture~\cite{diffusestylegesture2023} instead applies diffusion directly in the continuous pose space with classifier-free guidance.
+However, long sequence generation still relies on initial frame conditioning rather than a learned mechanism for enforcing continuity across temporal windows.
+Furthermore, all prior methods evaluated on BEAT2 report results only on a single speaker (Speaker~2), leaving generalization across the full 25-speakers set largely unverified.
 
-\paragraph{Co-speech gesture generation.}
-\citet{mcneill1992hand} established the foundational taxonomy of
-co-speech gestures, distinguishing \emph{beat} gestures---rhythmic
-movements that emphasize speech prosody without semantic content---from
-\emph{semantic} (iconic/metaphoric) gestures that visually represent
-meaning.
-This two-class distinction is reflected in the BEAT2 corpus~\cite{emage2024}
-and drives the conditioning in our model.
-Early data-driven approaches learn mappings from audio features to
-skeletal joint rotations using RNNs or
-CNNs~\cite{s2g,trimodal,ha2g,habibie}, with most methods restricted to
-upper-body or hand-only motion.
-ZeroEGGS~\cite{zeroeggs2023} introduces example-based style control
-through a learned style embedding, demonstrating that VAE-style latent
-representations enable speaker-stylized gesture generation, although
-it operates on a custom skeleton rather than the SMPL-X format used
-in our setting.
-Recent work has scaled to full-body SMPL-X generation.
-TalkSHOW~\cite{talkshow2023} generates holistic body motion from
-speech using a compositional VQ-VAE for body and hand motion together
-with a Gated PixelCNN autoregressive prior over codebook indices;
-long-form quality depends on rollout stability, as there is no
-explicit boundary-continuity objective.
-DiffuseStyleGesture~\cite{diffusestylegesture2023} runs a diffusion
-model directly in continuous pose space with classifier-free guidance,
-producing stylized output but relying on initial-frame conditioning
-rather than a learned boundary objective for chunk-to-chunk continuity.
-GestureDiffuCLIP~\cite{gesturediffuclip} runs latent diffusion in
-a VQ-VAE-pretrained gesture latent space with CLIP-based style control,
-demonstrating that VQ-then-diffusion pipelines can produce stylized
-co-speech motion.
-EMAGE~\cite{emage2024} introduces masked audio-gesture modeling for
-holistic co-speech synthesis, alongside the BEAT2 (BEAT-SMPLX-FLAME)
-corpus, establishing strong evaluation baselines for full-body gesture
-quality.
-MECo~\cite{meco2025}, concurrent work presented at SIGGRAPH 2025,
-fine-tunes a large language model to interpret motion examples and
-emit gesture tokens directly; both methods leverage LLMs in the
-gesture pipeline, but MECo predicts motion tokens auto-regressively
-from a residual VQ codebook whereas our planner outputs a high-level
-gesture-type segmentation that drives a continuous-latent VAE,
-side-stepping quantization entirely.
-Furthermore, all prior methods that report results on BEAT2 do so
-on a \emph{single speaker} (Speaker~2), leaving generalization across
-the full 25-speaker corpus unverified.
-Our work differs from all of the above in four ways:
-(i)~a continuous hierarchical VAE latent aligned to anatomical body
-parts replaces discrete codebooks;
-(ii)~anchor-prefix conditioning with a continuation velocity loss
-enables seamless arbitrary-length autoregression;
-(iii)~an LLM planner predicts gesture-type labels from raw transcripts,
-removing the dependency on dataset-specific annotations at inference
-time; and
-(iv)~the model is trained and evaluated on \emph{all 25 speakers},
-demonstrating cross-speaker generalization that no prior work has
-verified at this scale.
+\noindent \textbf{Hierarchical latent variable models.}
+VQ-VAE~\cite{vqvae} is a latent variable model that encodes continuous inputs into a sequence of discrete codebook indices, replacing the continuous latent space with a finite set of learned embeddings.
+The decoder reconstructs the data from these discrete tokens, while generation is typically performed using an autoregressive prior over the code indices.
+VQ-VAE 2~\cite{vqvae2} extends this formulation by introducing a multi-scale hierarchy of codebooks operating at different resolutions, where separate latent grids represent coarse and fine spatial structure.
+This results in a layered discrete representation rather than a single flat codebook.
+\citet{adiban2022} further extend this direction with hierarchical residual vector quantization (HR-VQVAE), where multiple codebook levels are applied sequentially and each level quantizes the residual error of the previous one.
+This produces a hierarchical discrete representation with multiple stages of refinement, at the cost of increased decoding complexity due to sequential codebook lookup across levels.
+% HR-VQVAE introduces discrete codebooks that are effective for modeling image pixels.
+However, in 3D human avatar motion generation, SMPL-X pose parameters lie in a continuous space, making direct application of HR-VQVAE less suitable.
+We therefore retain the hierarchical coarse-to-fine inductive bias of HR-VQVAE, but replace discrete quantization with a continuous Gaussian latent.
+This latent is partitioned channel wise, with each slice supervised on a specific body part, namely, the face, body, and hands.
 
-\paragraph{Hierarchical latent variable models.}
-VQ-VAE~\cite{vqvae} represents data via a learned discrete codebook
-of latent indices, decoupling a powerful autoregressive prior from a
-lightweight encoder/decoder.
-VQ-VAE-2~\cite{vqvae2} introduced a multi-scale hierarchy of such
-codebooks for high-fidelity image generation, demonstrating that
-coarse-to-fine factorization substantially improves reconstruction
-quality over flat codebooks.
-\citet{adiban2022} extended this idea with \emph{residual} vector
-quantization across $L$ levels, where each level quantizes the
-residual of the previous, yielding an $\mathcal{O}(L\!\cdot\!m)$
-codebook search at decoding time despite an effective codebook size
-of $m^L$.
-Their HR-VQVAE serves as the direct precursor to our architecture.
-However, discrete codebooks are a natural fit for image pixels,
-which occupy a bounded, perceptually discrete space: nearby pixel
-values that map to the same codeword look nearly identical to the
-human eye.
-SMPL-X pose parameters, by contrast, live in a continuous,
-high-dimensional Lie group where even small quantization errors
-compound across the kinematic chain and produce visible joint
-snapping or unnatural pauses in motion.
-We therefore inherit the hierarchical coarse-to-fine inductive bias
-of HR-VQVAE but replace discrete quantization with a continuous
-Gaussian latent, partitioning it channel-wise so that each slice is
-supervised on a distinct body part (face, body, hands).
-The reconstruction comparisons in
-Section~\ref{sec:experiments} show that this continuous formulation
-achieves substantially lower per-joint error than two representative
-VQ tokenizers.
-On the generative model side, \citet{petrovich2021actor} proposed
-a Transformer~\cite{transformer} VAE for action-conditioned motion
-synthesis, demonstrating that Transformer encoder-decoders generalize
-naturally to variable-length sequences without architectural
-modifications --- a property we rely on to handle the variable-duration
-chunks in our autoregressive pipeline.
-Beyond gesture, \citet{mdm} introduced a transformer-based diffusion
-model for general human motion synthesis trained on the
-HumanML3D~\cite{humanml3d} text-to-motion corpus, demonstrating the
-viability of continuous-pose generative modeling at scale.
+\noindent \textbf{Flow matching and diffusion priors over latents.}
+Denoising diffusion models~\cite{ddpm} and their extensions, including latent diffusion and flow matching, provide powerful frameworks for modeling continuous data distributions.
+Flow matching~\cite{lipman2023flow} formulates generative modeling as learning a continuous velocity field without simulating the full diffusion process, while rectified flow~\cite{rectifiedflow} further simplifies sampling by encouraging near-linear transport paths that can be integrated in a few ODE steps.
+We adopt the rectified flow formulation to learn a Transformer~\cite{transformer} based velocity field over our temporal latent sequence, conditioned on speaker speech, identity, and gesture type.
+% Instead of applying diffusion directly in SMPL X pose space, we operate in a compressed latent space (temporal stride 8, latent dimension 16), which reduces the computational cost of each ODE step and separates the complexity of motion generation from output resolution.
 
-\paragraph{Flow matching and diffusion priors over latents.}
-Building on denoising diffusion~\cite{ddpm}, latent diffusion and
-flow-matching models have emerged as powerful conditional priors
-over continuous representations.
-\citet{lipman2023flow} formalized flow matching as a simulation-free
-training objective for continuous normalizing flows, and
-\citet{rectifiedflow} showed that straight-line rectified flows admit
-exact integration and yield high-quality samples in very few ODE
-steps.
-We adopt the rectified-flow formulation to train a Transformer
-velocity field over our temporal latent sequence, conditioned on
-audio, speaker, and gesture-type context.
-Unlike approaches that run diffusion directly in pose space,
-operating in the compressed latent space (temporal stride $r\!=\!8$,
-$d_z\!=\!16$) reduces the cost of each ODE step and decouples the
-prior's capacity from the output resolution.
-
-\paragraph{LLM-driven motion planning.}
-Large language models have recently been applied to motion-related
-planning tasks, exploiting their world knowledge and instruction
-following to bridge natural language and motion primitives.
-MECo~\cite{meco2025} fine-tunes an LLM to consume motion-example
-prompts together with audio and emit gesture tokens directly.
-Our planner differs in scope and design: rather than selecting
-examples, it segments a timestamped transcript into gesture-type
-spans (beat vs.\ semantic), producing a structured plan that drives
-the downstream VAE directly.
-We fine-tune Qwen3.5-9B~\cite{qwen3} with LoRA~\cite{lora2022}
-on BEAT2 training data so that the planner learns the dataset's
-boundary granularity and gesture-type distribution, eliminating the
-need for manual \texttt{.sem} annotation at inference time.
+\noindent \textbf{LLM-driven motion planning.}
+Recent work has explored the use of LLMs for motion generation tasks.
+For example, MECo~\cite{meco2025} finetunes an LLM to process audio together with motion examples and directly generates gesture tokens as output.
+In contrast, our approach uses an LLM for gesture type planning.
+It produces timestamped segments with predicted gesture types, such as beat and semantic.
+This structured temporal plan is then used to condition the downstream VAE for motion generation.
 
 % ======================================================================
 % SECTION: Method
@@ -264,12 +81,9 @@ need for manual \texttt{.sem} annotation at inference time.
 
 \section{Method}
 \label{sec:method}
-
 \begin{figure*}[t]
   \centering
-  \fbox{\parbox{0.95\textwidth}{\centering\vspace{3cm}
-    [Figure 1 Placeholder: System Overview Diagram (TikZ code removed)]
-  \vspace{3cm}}}
+  \includegraphics[width=\textwidth]{system_overview.png}
 
   \Description{Three-band system overview. (a) Planning: a transcript is
     fed into a LoRA-fine-tuned Qwen language model that emits a sequence
@@ -283,181 +97,91 @@ need for manual \texttt{.sem} annotation at inference time.
     chunk are reused as the anchor prefix of the next, and a
     continuation velocity loss penalizes velocity discontinuity at chunk
     boundaries.}
-  \caption{System overview. \textbf{(a) Planning:} a fine-tuned language
-    model maps raw transcripts to timed gesture-type segments
-    (Section~\ref{sec:planner}), removing the dependency on
-    dataset-specific annotations at inference. \textbf{(b) Generation:}
-    a conditional flow-matching prior samples a temporal latent
-    $\mathbf{z}\!\in\!\mathbb{R}^{T'\times d_z}$, partitioned channel-wise
-    into face, body, and hand slices, that drives a Transformer
-    decoder with dual cross-attention and anchor-prefix conditioning
-    (Sections~\ref{sec:vae}--\ref{sec:prior}). \textbf{(c) Long-form:}
-    chunks are generated left-to-right; the last $K$ frames of each
-    chunk become the anchor prefix of the next, and a continuation
-    velocity loss $\mathcal{L}_\text{cont}$ trains the decoder for
-    velocity continuity at chunk boundaries
+  \caption{\textbf{GestureCraft inference pipeline.}
+    (1) Speech and transcript $\rightarrow$
+    (2) LLM planner emits beat/semantic gesture-type segments
+    (Section~\ref{sec:planner}) $\rightarrow$
+    (3) per-chunk conditioning (audio, speaker, gesture type) $\rightarrow$
+    (4) flow-matching prior samples temporal latent $\mathbf{z}$
+    (Section~\ref{sec:prior}) $\rightarrow$
+    (5) channel-wise face/body/hands partition
+    $\mathbf{z}^{(0)},\mathbf{z}^{(1)},\mathbf{z}^{(2)}$
+    (Section~\ref{sec:vae}) $\rightarrow$
+    (6) hierarchical Transformer decoder $\rightarrow$
+    (7) SMPL-X pose at $30$\,fps.
+    Bottom: chunked autoregression reuses the previous chunk's last $K$
+    frames as an anchor prefix
     (Section~\ref{sec:autoreg}).}
   \label{fig:overview}
 \end{figure*}
 
-We present a system for audio-driven co-speech gesture synthesis
-that generates continuous, full-body SMPL-X motion
-from speech audio and a speaker identity.
-The system consists of three learned components
-(Figure~\ref{fig:overview}), trained in stages:
-\begin{enumerate}
-\item a \textbf{body-part-hierarchical temporal VAE} trained on all 25
-      speakers, encoding SMPL-X pose sequences into a continuous
-      latent space structured around the body's anatomical hierarchy
-      (Section~\ref{sec:vae});
-\item a \textbf{conditional flow-matching prior} that first pretrains on
-      all speakers and is then fine-tuned end-to-end with perceptual losses,
-      sampling the latent conditioned on audio, speaker, and gesture type,
-      combined with \textbf{anchor-prefix conditioning} for seamless
-      long-form autoregression (Sections~\ref{sec:prior}
-      and~\ref{sec:autoreg});
-\item a \textbf{fine-tuned LLM gesture-type planner} that produces
-      per-segment gesture-type annotations from raw speech transcripts,
-      enabling operation on arbitrary recordings without
-      dataset-specific labeling (Section~\ref{sec:planner}).
-\end{enumerate}
+We propose a method for co-speech gesture synthesis that produces continuous full-body SMPL-X motions conditioned on speech audio, speaker identity, and gesture type.
+Our model, illustrated in Figure~\ref{fig:overview}, consists of four components: (i) Hierarchical continuous temporal VAE for structured motion representation, (ii) Conditional flow-matching prior that samples the latent conditioned on speaker speech, identity, and gesture type, (iii) Anchor-conditioned chunk-wise autoregressive decoder for long-form generation, and (iv) LLM-based gesture type planner for temporal segmentation.
 
-\paragraph{Notation.}
-Let $\mathbf{x} \in \mathbb{R}^{T \times 165}$ denote a motion sequence of
-$T$ frames at 30\,fps, represented as SMPL-X axis-angle pose vectors.
-The 165 dimensions decompose into three anatomical parts:
-body $\mathbf{x}_\text{B} \!=\! \mathbf{x}_{0:66}$,
-face $\mathbf{x}_\text{F} \!=\! \mathbf{x}_{66:75}$, and
-hands $\mathbf{x}_\text{H} \!=\! \mathbf{x}_{75:165}$.
-Audio is represented by Wav2Vec~2.0 features
-$\mathbf{a} \in \mathbb{R}^{T \times 768}$~\cite{wav2vec2}.
-Each motion segment is annotated with a discrete gesture type
-$g \in \{\text{beat},\, \text{semantic}\}$~\cite{mcneill1992hand}
-and a speaker identity $s$.
-Anchor frames $\mathbf{x}_a \in \mathbb{R}^{K \times 165}$ denote the last
-$K$ frames of the preceding segment, passed to the decoder during
-autoregressive generation.
+\noindent \textbf{Notation.}
+Let $\mathbf{x} \in \mathbb{R}^{T \times 165}$ denote a motion sequence at 30\,fps in an SMPL-X axis-angle representation.
+The pose vector is decomposed into body, face, and hands,
+$\mathbf{x}_\text{B} \in \mathbb{R}^{T \times 66}$, $\mathbf{x}_\text{F} \in \mathbb{R}^{T \times 9}$, and $\mathbf{x}_\text{H} \in \mathbb{R}^{T \times 90}$.
+Speech is represented using Wav2Vec 2.0~\cite{wav2vec2} BASE features
+$\mathbf{a} \in \mathbb{R}^{T \times 768}$.
+Note that $\mathbf{x}$ encodes joint rotations only; root translation and global orientation drift are not modeled.
+Each motion segment is associated with a gesture type label $g \in \{\text{beat}, \text{semantic}\}$ and a speaker identity $s$.
 
 % -----------------------------------------------------------------------
-\subsection{Body-Part-Hierarchical Temporal VAE}
+\subsection{Hierarchical VAE}
 \label{sec:vae}
 % -----------------------------------------------------------------------
+We model motion sequences using a variational autoencoder that encodes input motion into a continuous Gaussian latent sequence.
+The latent is temporally downsampled and factorized into structured channel-wise groups corresponding to face, body, and hands.
 
-\paragraph{Motivation.}
-Whereas \citet{adiban2022} hierarchically factorize a codebook through
-residual vector quantization, we factorize a \emph{continuous} Gaussian
-latent into $L\!=\!3$ ordered slices, each assigned to a distinct body part:
-face ($\ell\!=\!0$), body ($\ell\!=\!1$), and hands ($\ell\!=\!2$).
-The slice ordering reflects the relative dimensionality of each body
-part: face (jaw + eyes) spans 9 scalar dimensions, body 66, and hands
-90.
-Through partial-output decoding (Section~\ref{sec:train}), level $0$
-must reconstruct the face from $\mathbf{z}^{(0)}$ alone, level $1$
-adds the body using $[\mathbf{z}^{(0)}, \mathbf{z}^{(1)}]$, and level
-$2$ adds the hands using the full latent---so smaller body-part slices
-specialize first along the channel-wise hierarchy.
-All level losses backpropagate jointly through the shared encoder and
-decoder weights in a single backward pass; the body-part assignment
-ensures that each level's local loss signal is computed only from the
-joints it is responsible for, so the dominant body-motion signal does
-not suppress the weaker gradients from face and hand joints.
+\noindent \textbf{Encoding.}
+Given motion sequence $\mathbf{x}$ and audio $\mathbf{a}$, we embed both using a Transformer encoder with positional encoding.
+Audio features are added to the motion embeddings at the input level.
+The encoder output is passed through a strided 1D convolution with stride $r=8$, producing a latent sequence $\mathbf{h} \in \mathbb{R}^{T' \times d}$.
+Each latent token is projected to Gaussian parameters $(\boldsymbol{\mu}, \boldsymbol{\sigma})$, and the latent $\mathbf{z}$ is sampled via the reparameterization trick.
 
-Although VQ-VAE variants dominate recent gesture generation
-literature~\cite{adiban2022,emage2024,talkshow2023,syntalker,gesturediffuclip},
-vector quantization introduces a discretization step that limits the
-smoothness of the decoded motion: nearby poses that map to the same
-codebook entry are reconstructed identically, producing velocity
-discontinuities at codeword boundaries.
-By retaining a fully continuous Gaussian latent, our VAE avoids this
-quantization step.
-The reconstruction comparisons in Section~\ref{sec:experiments} show
-that this continuous formulation both reduces per-joint error and
-produces measurably smoother decoded motion: HR-VQVAE attains
-P99 jerk within $2.6{\times}$ of ground truth, against
-$13.5{\times}$ for EMAGE's VQ tokenizer.
+\noindent \textbf{Hierarchical latent factorization.}
+The latent is split along the channel dimension into three groups $\mathbf{z} = [\mathbf{z}^{(0)}, \mathbf{z}^{(1)}, \mathbf{z}^{(2)}]$,
+corresponding to face, body, and hands.
+The latent dimension $d_z=16$ is partitioned as $(5,5,6)$ across the three groups.
 
-\paragraph{Encoder.}
-A Transformer encoder with sinusoidal positional encoding takes
-$\mathbf{x}$ as input, with audio $\mathbf{a}$ added element-wise to
-the frame embeddings before the first layer.
-After the transformer trunk, a speaker embedding $\mathbf{e}_s$ and a
-gesture-type embedding $\mathbf{e}_g$ are broadcast-added across the
-temporal dimension.
-A strided 1-D convolution (stride $r\!=\!8$) temporally downsamples the
-encoder output, producing latent tokens
-$\mathbf{h} \in \mathbb{R}^{T' \times d}$ with $T' \!=\! \lceil T/r \rceil$.
-Each token is projected to mean $\boldsymbol{\mu} \in \mathbb{R}^{d_z}$
-and log-variance $\log\boldsymbol{\sigma}^2 \in \mathbb{R}^{d_z}$
-($d_z = 16$ in our experiments), and $\mathbf{z} \in \mathbb{R}^{T' \times d_z}$
-is sampled via the reparameterization trick.
-We choose a Transformer backbone specifically because its
-self-attention mechanism operates on sequences of arbitrary length
-without architectural changes, allowing the model to encode and
-decode motion clips of any duration at training and inference
-time—a property that RNN or CNN alternatives do not provide without
-fixed-length padding or windowing heuristics.
+\noindent \textbf{Decoding.}
+A Transformer decoder reconstructs motion at full temporal resolution.
+Each layer applies self-attention over motion tokens and cross-attention over two conditioning sources: (i) Latent tokens $\mathbf{z}$, augmented with identity and gesture type embeddings and (ii) Audio features.
+This design allows the decoder to jointly leverage identity and timing information.
 
-\paragraph{Hierarchical latent factorization.}
-The latent $\mathbf{z}$ is partitioned channel-wise into $L$ ordered
-slices:
+\noindent \textbf{Reconstruction objective.}
+We employ a hierarchical reconstruction scheme with partial supervision over body parts.
+The decoder produces intermediate outputs using progressively more latent slices.
+The face is reconstructed from $\mathbf{z}^{(0)}$, the body from $[\mathbf{z}^{(0)}, \mathbf{z}^{(1)}]$, and the hands from all slices.
+The corresponding loss is as follows:
+
 \begin{equation}
-\mathbf{z} = \bigl[\mathbf{z}^{(0)},\, \mathbf{z}^{(1)},\,
-  \mathbf{z}^{(2)}\bigr],
-\quad \mathbf{z}^{(\ell)} \in \mathbb{R}^{T' \times d_\ell},
+\mathcal{L}^{(\ell)}_\text{local}
+= \mathcal{L}_\text{aa}^{(\ell)}
++ \lambda_\text{vel}\mathcal{L}_\text{vel}^{(\ell)}
++ \mathcal{L}_\text{mesh}^{(\ell)}
++ \mathcal{L}_\text{joint}^{(\ell)}.
 \end{equation}
-with level $\ell$ supervised on body part $\ell$ (face/body/hands).
-The slice widths $d_\ell$ partition $d_z$ as evenly as possible
-($d_z\!=\!16$, $L\!=\!3$ gives $(5,5,6)$).
-The per-level KL divergence is computed independently over each slice:
+The global reconstruction loss applied to the full output is:
 \begin{equation}
-\mathcal{L}_\text{KL} = \sum_{\ell=0}^{L-1}
-  \mathrm{KL}\!\left(
-    \prod_{t} \mathcal{N}\!\left(\boldsymbol{\mu}_t^{(\ell)},\,
-      \mathrm{diag}\,\boldsymbol{\sigma}_t^{(\ell)2}\right)
-    \,\Big\|\,
-    \mathcal{N}(\mathbf{0}, \mathbf{I})
-  \right).
+\mathcal{L}_\text{global}
+= \mathcal{L}_\text{aa}
++ \lambda_\text{vel}\mathcal{L}_\text{vel}
++ 5\mathcal{L}_\text{mesh}
++ 3\mathcal{L}_\text{joint}.
+\end{equation}
+The slice-wise KL regularization is:
+\begin{equation}
+\mathcal{L}_\text{KL}
+= \sum_{\ell=0}^{2}
+\mathrm{KL}(q(\mathbf{z}^{(\ell)}) \| \mathcal{N}(0, I)).
 \label{eq:kl}
 \end{equation}
-This slice-level KL decomposition lets each level's per-part loss
-(Section~\ref{sec:train}) regularize its assigned slice independently,
-without coupling its posterior to the others through a shared KL
-term.
 
-\paragraph{Decoder.}
-A pre-norm Transformer decoder generates the output sequence at the
-original frame rate $T$.
-Each decoder block applies self-attention followed by two independent
-cross-attention layers:
-the first attends to the temporal latent token sequence~$\mathbf{z}$,
-to which the speaker embedding $\mathbf{e}_s$ and gesture-type
-embedding $\mathbf{e}_g$ are added prior to positional encoding;
-the second attends to the full-resolution audio~$\mathbf{a}$,
-optionally augmented with BERT text features.
-Splitting the conditioning across two memory streams allows the
-decoder to separately attend to identity- and style-bearing
-information in~$\mathbf{z}$ and to timing- and rhythm-bearing
-information in the audio, while keeping both modalities available
-at every layer.
-
-\begin{figure}[t]
+\begin{figure*}[t]
   \centering
-  % TODO: replace with VAE training-architecture figure
-  % Purpose: illustrate the body-part-hierarchical VAE training pipeline.
-  %   Show: encoder (Transformer + strided 1-D conv downsampling) -> mu, logvar
-  %         -> reparameterization -> z (with three-band colour split:
-  %         orange = face, teal = body, purple = hands)
-  %         -> decoder -> reconstructed pose
-  %         -> per-level body-part-localized losses (face/body/hands) +
-  %            global loss arrows landing on the appropriate decoder outputs.
-  %   Reuse the orange/teal/purple body-part palette from Figure 1 so the
-  %   reader recognises the hierarchy across both figures.
-  \fbox{\parbox{0.95\columnwidth}{\centering\vspace{2.5cm}
-    [Figure~\ref{fig:vae_train}: VAE training architecture---
-    encoder $\to$ $\boldsymbol{\mu},\boldsymbol{\sigma}$ $\to$
-    hierarchical latent $\mathbf{z}$ (face/body/hands slices) $\to$
-    decoder $\to$ per-level body-part losses + global loss.
-    ]\vspace{2.5cm}}}
+  \includegraphics[width=\textwidth]{vae_training.png}
   \Description{Diagram of the VAE training architecture. The encoder
     is a Transformer followed by a strided 1-D convolution that
     downsamples the input pose sequence by a factor of 8. The output
@@ -468,331 +192,194 @@ at every layer.
     the SMPL-X pose sequence; per-level losses are applied separately
     to the face, body, and hand joints, in addition to a whole-body
     global loss.}
-  \caption{VAE training architecture. The continuous latent
-    $\mathbf{z}$ is partitioned channel-wise into three ordered slices
-    (face / body / hands) and supervised by per-level body-part-localized
-    reconstruction losses (Eq.~\ref{eq:kl} and Section~\ref{sec:train})
-    in addition to a whole-body global loss.}
+  \caption{VAE training architecture. The continuous latent $\mathbf{z}$ is partitioned channel-wise into three ordered slices (face/body/hands) and supervised by per-level body-part-localized reconstruction losses in addition to a whole-body global loss.}
   \label{fig:vae_train}
-\end{figure}
+\end{figure*}
 
 % -----------------------------------------------------------------------
-\subsection{Training Objective}
-\label{sec:train}
-% -----------------------------------------------------------------------
-
-\paragraph{Per-level body-part loss.}
-For level $\ell \in \{0,1,2\}$, the decoder produces a partial output
-$\hat{\mathbf{x}}^{(\ell)}$ using only
-$[\mathbf{z}^{(0)}, \ldots, \mathbf{z}^{(\ell)}]$ (higher slices are
-zeroed out).
-This partial output is supervised on the body part assigned to level
-$\ell$ with four loss terms---axis-angle MSE, velocity MSE, SMPL-X
-mesh-vertex MSE, and joint-position MSE---all computed only on the
-relevant joint/vertex subset, with a velocity coefficient
-$\lambda_\text{vel}\!=\!3$:
-\begin{equation}
-\mathcal{L}^{(\ell)}_\text{local} =
-  \mathcal{L}_\text{aa}^{(\ell)}
-  + \lambda_\text{vel}\,\mathcal{L}_\text{vel}^{(\ell)}
-  + \mathcal{L}_\text{mesh}^{(\ell)}
-  + \mathcal{L}_\text{joint}^{(\ell)}.
-\end{equation}
-Including mesh and joint losses in SMPL-X space prevents axis-angle
-accumulation errors from causing visible end-effector drift in finger
-and face joints.
-
-\paragraph{Global loss.}
-The final decoder output $\hat{\mathbf{x}}^{(L-1)}$ is supervised on
-all body parts jointly with the same four-term loss, up-weighting the
-SMPL-X mesh and joint terms:
-$\mathcal{L}_\text{global} = \mathcal{L}_\text{aa}
-+ \lambda_\text{vel}\,\mathcal{L}_\text{vel}
-+ 5\,\mathcal{L}_\text{mesh} + 3\,\mathcal{L}_\text{joint}$
-($\lambda_\text{vel}\!=\!3$).
-
-\paragraph{Total loss.}
-\begin{equation}
-\mathcal{L} =
-  \sum_{\ell=0}^{L-1} w_\ell \,\mathcal{L}^{(\ell)}_\text{local}
-  +\, \mathcal{L}_\text{global}
-  +\, \beta\,\mathcal{L}_\text{KL}
-  +\, \lambda_\text{cont}\,\mathcal{L}_\text{cont}
-  +\, \lambda_\text{anc}\,\mathcal{L}_\text{anc},
-\end{equation}
-where $\mathcal{L}_\text{cont}$ is the continuation velocity loss
-defined in Section~\ref{sec:autoreg} and $\mathcal{L}_\text{anc}$ is
-the auxiliary anchor-reconstruction MSE.
-The KL coefficient $\beta$ is kept at a small constant
-($\beta\!=\!10^{-5}$) so the reconstruction terms dominate the
-optimization; in practice we observe stable non-trivial KL values
-across all $L$ levels and no posterior collapse.
-
-\paragraph{Level-wise specialization through partial decoding.}
-The progressive structure is enforced through the partial-output
-construction itself rather than an epoch-based schedule: every level
-loss $\mathcal{L}^{(\ell)}_\text{local}$ supervises the decoder
-output produced from only $[\mathbf{z}^{(0)}, \ldots, \mathbf{z}^{(\ell)}]$
-(higher slices zeroed) on the body part assigned to level $\ell$.
-This means level $0$ must explain the face from
-$\mathbf{z}^{(0)}$ alone, level $1$ must explain the body from
-$[\mathbf{z}^{(0)}, \mathbf{z}^{(1)}]$, and level $2$ must explain
-the hands using the full latent.
-The global loss $\mathcal{L}_\text{global}$, applied to the full-latent
-output, ensures the final reconstruction remains coherent across all
-body parts.
-
-\paragraph{Hyperparameters.}
-$d_\text{model}\!=\!512$, $d_z\!=\!16$, $L\!=\!3$, 8 attention heads,
-6 encoder and 6 decoder layers, $d_\text{ff}\!=\!2048$, dropout 0.1,
-temporal stride $r\!=\!8$, $K_\text{max}\!=\!90$ anchor frames.
-Loss coefficients: $w_\ell\!=\!1$ for all $\ell$,
-$\lambda_\text{vel}\!=\!3$, $\beta\!=\!10^{-5}$,
-$\lambda_\text{cont}\!=\!3$, $\lambda_\text{anc}\!=\!0.1$.
-Trained for 400 epochs, batch size 8, Adam with $\text{lr}\!=\!10^{-4}$.
-
-% -----------------------------------------------------------------------
-\subsection{Anchor-Prefix Conditioning and Chunked Autoregressive Generation}
-\label{sec:autoreg}
-% -----------------------------------------------------------------------
-
-Long recordings cannot be synthesized in a single forward pass due to
-memory and length constraints, and independently generated chunks would
-produce visually jarring discontinuities at boundaries.
-We address both issues jointly with \emph{anchor-prefix conditioning}
-during training and a matching \emph{chunked autoregressive} scheme at
-inference.
-
-\paragraph{Anchor-prefix conditioning.}
-The decoder receives the $K$ frames immediately preceding the current
-chunk---the \emph{anchor prefix}
-$\mathbf{x}_a \in \mathbb{R}^{K \times 165}$---together with their
-matching audio slice
-$\mathbf{a}_a \in \mathbb{R}^{K \times 768}$.
-Anchor frames are projected and prepended to the decoder's query
-sequence (so self-attention can pull motion context from them), and the
-anchor audio is prepended to the audio cross-attention memory (so audio
-attention covers the same time span as the motion query).
-The decoder also reconstructs the anchor frames alongside the main
-sequence; this auxiliary reconstruction loss anchors the boundary
-pose.
-
-\paragraph{Anchor curriculum.}
-To bridge the gap between training and inference, anchor length $K$ is sampled according to a three-way curriculum:
-\begin{itemize}
-\item \textbf{60\%:} full anchor ($K\!=\!K_\text{max}$), exactly matching
-      the inference setting;
-\item \textbf{20\%:} no anchor ($K\!=\!0$), training an unconditional fallback;
-\item \textbf{20\%:} random $K \in [1, K_\text{max}-1]$, building robustness
-      to shorter prefixes and to the first chunk of a recording.
-\end{itemize}
-
-\paragraph{Continuation velocity loss.}
-Standard velocity loss penalizes frame-to-frame jitter uniformly across
-the sequence, but the perceptually critical region is the
-anchor-to-generated \emph{boundary}.
-We introduce a \emph{linearly decaying} continuation velocity loss that
-concentrates its weight there.
-Let $\hat{\mathbf{x}}_i$ denote the $i$-th generated frame, $\mathbf{x}_i$
-the corresponding ground-truth frame, and $\mathbf{x}_a^{(K)}$ the last
-anchor frame.
-Define per-frame velocity residuals:
-\begin{align}
-\hat{\Delta}_i &= \begin{cases}
-  \hat{\mathbf{x}}_0 - \mathbf{x}_a^{(K)} & i = 0 \\
-  \hat{\mathbf{x}}_i - \hat{\mathbf{x}}_{i-1} & i > 0
-\end{cases},
-\quad
-\Delta_i = \begin{cases}
-  \mathbf{x}_0 - \mathbf{x}_a^{(K)} & i = 0 \\
-  \mathbf{x}_i - \mathbf{x}_{i-1} & i > 0.
-\end{cases}
-\end{align}
-With horizon hyperparameter $N\!=\!30$ frames and iteration bound
-$n\!=\!\min(N, T)$, the continuation loss is:
-\begin{equation}
-\mathcal{L}_\text{cont} =
-  \frac{1}{\sum_{i=0}^{n-1} w_i}
-  \sum_{i=0}^{n-1} w_i \,\bigl\|\hat{\Delta}_i - \Delta_i\bigr\|^2,
-\quad w_i = 1 - \tfrac{i}{N}.
-\label{eq:cont}
-\end{equation}
-The weight $w_0 \!=\! 1$ applies the largest penalty to the boundary
-velocity $(\hat{\mathbf{x}}_0 - \mathbf{x}_a^{(K)})$, which is the velocity
-most likely to produce a visible pop; weights decay linearly so that frames
-deeper into the chunk are gently nudged but not over-constrained.
-
-\paragraph{Inference: chunked autoregressive generation.}
-At inference time the recording is first segmented by the gesture-type
-planner (Section~\ref{sec:planner}).
-Each segment is split at gesture-type transitions and further divided into
-chunks of at most 150 frames (5 seconds at 30\,fps), with a minimum
-of 5 frames.
-Chunks are generated left-to-right:
-\begin{enumerate}
-\item Build the anchor prefix from the previous chunk's last
-      $K\!=\!90$ decoded frames and the corresponding audio slice.
-\item Sample latent $\mathbf{z}_n$ from the flow-matching prior
-      (Section~\ref{sec:prior}) conditioned on the chunk's audio,
-      speaker, gesture type, and the anchor prefix.
-\item Decode chunk $n$ with the temporal VAE decoder, conditioned on
-      $\mathbf{z}_n$, audio, and the anchor prefix.
-\item Optionally apply a cosine cross-fade over the overlap and a
-      Gaussian post-smooth limited to the first few blend frames to
-      further suppress any residual seam artifact.
-\end{enumerate}
-The chunked autoregressive loop is illustrated by the bottom feedback
-arrow in Figure~\ref{fig:overview}.
-
-% -----------------------------------------------------------------------
-\subsection{Conditional Flow-Matching Latent Prior}
+\subsection{Conditional Flow-Matching Prior}
 \label{sec:prior}
 % -----------------------------------------------------------------------
+We model the latent distribution of motion representations using a conditional flow-matching model.
+Instead of sampling from a fixed Gaussian prior, we learn a velocity field $p(\mathbf{z} \mid \mathbf{a}, s, g)$ to generate latents conditioned on speech audio $\mathbf{a}$, speaker identity $s$, and gesture type $g$.
 
-Sampling $\mathbf{z} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$ ignores the
-audio, speaker, and gesture-type context entirely.
-We replace the standard Gaussian prior with a conditional
-\emph{flow-matching prior}~\cite{rectifiedflow} that models
-$p(\mathbf{z} \mid \mathbf{a}, s, g)$.
+\noindent \textbf{Conditioning architecture.}
+We construct a temporal conditioning representation using an audio encoder.
+Wav2Vec 2.0~\cite{wav2vec2} features are first projected to a shared embedding space and combined with identity and gesture type embeddings.
+When available, anchor-prefix embeddings are also injected into the same representation.
+The resulting sequence is processed by a Transformer with sinusoidal positional encoding, producing a conditioning context $\mathbf{c}_{1:T'} \in \mathbb{R}^{T' \times d_\text{model}}$.
+This context is used to condition the generative process of the latent sequence.
 
-\paragraph{Architecture.}
-A temporal audio encoder produces a per-token audio context
-$\mathbf{c}_{1:T'} \in \mathbb{R}^{T' \times d_\text{model}}$: Wav2Vec
-features are projected to $d_\text{model}$, the speaker, gesture-type,
-and (when available) anchor-prefix conditioning vectors are
-broadcast-added across time, the sequence is passed through a
-Transformer trunk with sinusoidal positional encoding, and a
-strided 1-D convolution (stride $r\!=\!8$, matching the VAE) yields
-the $T'$-token output.
-A Transformer velocity field $v_\theta(\mathbf{z}_t, t, \mathbf{c})$
-then denoises the latent token sequence $\mathbf{z}_{1:T'}$,
-conditioning on the flow time $t \in [0, 1]$ through zero-initialized
-DiT-style~\cite{dit} AdaLN modulation of the self-attention and FFN
-layer norms, and on the audio context through cross-attention.
+\noindent \textbf{Flow-matching model.}
+We learn a neural velocity field $v_\theta(\mathbf{z}_t, t, \mathbf{c})$ that transforms Gaussian noise into structured latent codes.
+The model is conditioned on both the intermediate noisy latent $\mathbf{z}_t$ and the conditioning context $\mathbf{c}$.
+Time information $t \in [0,1]$ is injected using AdaLN modulation~\cite{dit}, while cross-attention is used to integrate audio and conditioning signals.
 
-\paragraph{VAE decoder fine-tuning.}
-The VAE is first trained on all 25 speakers.
-For the Speaker~2 evaluation, we additionally fine-tune the decoder
-on Speaker~2 data alone (encoder frozen), producing a speaker-adapted
-variant used only in the Speaker~2 pipeline.
+\noindent \emph{Stage 1: Flow-matching pretraining.}
+We first train the model to match the VAE encoder posterior.
+Given a latent sample $\mathbf{z}^* \sim q_\phi(\mathbf{z} \mid \mathbf{x}, \mathbf{a}, s, g)$, we construct a noisy interpolation:
 
-\paragraph{Stage~1: All-speaker pretraining.}
-With the VAE frozen, we sample $\mathbf{z}^* \sim q_\phi(\mathbf{z}|\mathbf{x},\mathbf{a},s,g)$
-from the encoder posterior, normalize it by per-channel mean and
-standard deviation estimated on the training set, and optimize the
-rectified-flow objective:
 \begin{equation}
-\mathcal{L}_\text{flow} =
-  \mathbb{E}_{t, \boldsymbol{\varepsilon}}
-  \bigl\| v_\theta(\mathbf{z}_t, t, \mathbf{c})
-  - (\mathbf{z}^* - \boldsymbol{\varepsilon}) \bigr\|^2,
+    \mathbf{z}_t = (1 - t)\boldsymbol{\varepsilon} + t\mathbf{z}^*, \quad \boldsymbol{\varepsilon} \sim \mathcal{N}(\mathbf{0}, \mathbf{I}),
 \end{equation}
-where $\boldsymbol{\varepsilon} \sim \mathcal{N}(\mathbf{0},\mathbf{I})$,
-$\mathbf{z}_t = (1-t)\boldsymbol{\varepsilon} + t\mathbf{z}^*$, and $t$ is
-sampled from a logit-normal distribution
-$t = \mathrm{sigmoid}(\sigma_t \cdot u)$ with $u \sim \mathcal{N}(0,1)$,
-$\sigma_t \!=\! 0.5$, concentrating training timesteps near the path
-endpoints.
-The prior is trained on all 25 speakers jointly; the best checkpoint is
-selected by autoregressive FGD on the \emph{validation} split.
+and optimize the rectified-flow objective:
 
-\paragraph{Stage~2: End-to-end perceptual fine-tuning.}
-Starting from the all-speaker prior checkpoint, we fine-tune the prior
-using a combined perceptual loss computed \emph{through} the frozen VAE
-decoder, which allows gradients from motion-quality objectives to shape
-the prior's sampling distribution directly:
+\begin{equation}
+    \mathcal{L}_\text{flow} =
+    \mathbb{E}_{t, \boldsymbol{\varepsilon}}
+    \left\| v_\theta(\mathbf{z}_t, t, \mathbf{c}) - (\mathbf{z}^* - \boldsymbol{\varepsilon}) \right\|^2.
+\end{equation}
+
+\noindent \emph{Stage 2: Perceptual fine-tuning.}
+We further refine the flow model using perceptual supervision through a frozen VAE decoder.
+This allows optimization directly in motion space while keeping the latent generator unchanged.
+The objective combines flow matching with motion-quality losses:
+
 \begin{equation}
 \mathcal{L}_\text{e2e} =
-  \mathcal{L}_\text{flow}
-  + \lambda_\text{fgd}\,\mathcal{L}_\text{FGD}
-  + \lambda_\text{beat}\,\mathcal{L}_\text{beat},
+\mathcal{L}_\text{flow}
++ \lambda_\text{fgd} \mathcal{L}_\text{FGD}
++ \lambda_\text{beat} \mathcal{L}_\text{beat}.
 \end{equation}
-where $\mathcal{L}_\text{beat}$ penalizes misalignment between motion
-peaks and audio beat onsets, and $\mathcal{L}_\text{FGD}$ is a
-differentiable FGD moment-matching surrogate that combines a mean and a
-covariance term in the FGD feature space:
-\begin{equation*}
-\mathcal{L}_\text{FGD} =
-  \bigl\|\boldsymbol{\mu}_\text{pred} - \boldsymbol{\mu}_\text{gt}\bigr\|^2
-  + \lambda_\text{cov}\,
-  \bigl\|\boldsymbol{\Sigma}_\text{pred} - \boldsymbol{\Sigma}_\text{gt}
-  \bigr\|_F^2.
-\end{equation*}
-To obtain a clean latent for the perceptual losses, we apply the
-predicted-$z^*$ trick during training: given the sampled
-$(\mathbf{z}_t, t)$ pair and the velocity prediction $v_\theta$, we
-form
-$\hat{\mathbf{z}}^* = \mathbf{z}_t + (1-t)\,v_\theta(\mathbf{z}_t, t, \mathbf{c})$,
-which is a fully differentiable one-step estimate of the clean latent
-endpoint along the rectified-flow path.
-This estimate is then decoded through the frozen VAE decoder, and
-gradients from the perceptual losses propagate back to $\theta$.
-We use $\lambda_\text{fgd}\!=\!0.01$, $\lambda_\text{beat}\!=\!0.1$,
-$\lambda_\text{cov}\!=\!1.0$, and $\text{lr}\!=\!10^{-5}$.
+The FGD loss matches feature statistics between generated and ground-truth motion, while the beat loss encourages alignment between motion peaks and audio rhythm.
+To enable differentiable optimization, we estimate a one-step latent prediction:
 
-\paragraph{Sampling.}
-Starting from $\boldsymbol{\varepsilon} \sim \mathcal{N}(\mathbf{0},\mathbf{I})$,
-we integrate $v_\theta$ from $t\!=\!0$ to $t\!=\!1$ with the midpoint
-method over $N\!=\!50$ steps to obtain $\mathbf{z}$, which is then
-passed to the VAE decoder.
-A guidance scale $g$ (selected on the validation set; $g\!=\!0.5$ in our
-final evaluation) controls the trade-off between fidelity and diversity.
+\begin{equation}
+    \hat{\mathbf{z}}^* = \mathbf{z}_t + (1 - t)\, v_\theta(\mathbf{z}_t, t, \mathbf{c}),
+\end{equation}
+which is decoded through the frozen VAE during training.
+
+\noindent \emph{Sampling.}
+At inference time, we generate latents by integrating the learned velocity field from Gaussian noise using a midpoint ODE solver with $N=50$ steps.
+The resulting latent sequence is decoded using the VAE decoder to produce motion.
+A classifier-free guidance scale $w$ controls the trade-off between fidelity and diversity.
 
 % -----------------------------------------------------------------------
-\subsection{LLM Gesture-Type Planner}
+\subsection{Anchor-Conditioned Decoder}
+\label{sec:autoreg}
+% -----------------------------------------------------------------------
+Long motion sequences cannot be generated in a single forward pass due to memory constraints and sequence length limitations.
+However, independently generated chunks often produce discontinuities at segment boundaries.
+We address this using anchor-conditioned decoding during both training and inference, combined with chunk-wise autoregressive generation.
+
+\noindent \textbf{Anchor-prefix conditioning.}
+At each decoding step, the model receives an anchor-prefix consisting of the last $K$ frames from the previously generated chunk, denoted as $\mathbf{x}_a \in \mathbb{R}^{K \times 165}$, together with the corresponding audio segment $\mathbf{a}_a \in \mathbb{R}^{K \times 768}$.
+The anchor motion is appended to the decoder input sequence, allowing self-attention to access prior motion context.
+The anchor audio is similarly appended to the audio memory used in cross-attention, ensuring temporal alignment between motion and speech context.
+During training, the decoder also reconstructs the anchor frames as an auxiliary objective to stabilize boundary prediction.
+
+\noindent \textbf{Anchor curriculum.}
+To reduce the discrepancy between training and inference, we apply a curriculum over anchor length $K$.
+Specifically, we sample:
+
+\begin{itemize}[leftmargin=*]
+    \item 60\% full anchors ($K = K_\text{max}$), matching inference conditions.
+    \item 20\% no anchors ($K = 0$), enabling fallback robustness.
+    \item 20\% random anchors ($K \in [1, K_\text{max}-1]$), improving generalization to partial context.
+\end{itemize}
+
+\noindent \textbf{Continuation velocity loss.}
+To improve temporal consistency at chunk boundaries, we introduce a weighted velocity matching loss to emphasize the transition region between anchor and generated motion.
+Let $\hat{\mathbf{x}}_i$ and $\mathbf{x}_i$ denote predicted and ground-truth frames, and $\mathbf{x}_a^{(K)}$ the last anchor frame.
+We define velocity differences:
+
+\begin{align}
+\hat{\Delta}_i &=
+\begin{cases}
+\hat{\mathbf{x}}_0 - \mathbf{x}_a^{(K)}, & i = 0 \\
+\hat{\mathbf{x}}_i - \hat{\mathbf{x}}_{i-1}, & i > 0
+\end{cases}, \\
+\Delta_i &=
+\begin{cases}
+\mathbf{x}_0 - \mathbf{x}_a^{(K)}, & i = 0 \\
+\mathbf{x}_i - \mathbf{x}_{i-1}, & i > 0.
+\end{cases}
+\end{align}
+The continuation loss is computed over a horizon of $N$ frames:
+
+\begin{equation}
+\mathcal{L}_\text{cont} =
+\frac{1}{\sum_{i=0}^{n-1} w_i}
+\sum_{i=0}^{n-1} w_i \|\hat{\Delta}_i - \Delta_i\|^2,
+\quad w_i = 1 - \frac{i}{N},
+\label{eq:cont}
+\end{equation}
+where $n = \min(N, T)$.
+This weighting emphasizes consistency at the anchor boundary while gradually relaxing constraints deeper into the generated chunk.
+
+\noindent \textbf{Chunk-wise autoregressive generation.}
+At inference time, motion is generated sequentially following the segmentation produced by the gesture type planner (Section~\ref{sec:planner}).
+Each segment is further divided into fixed-length chunks of up to 150 frames.
+Generation proceeds autoregressively as follows:
+
+\begin{enumerate}[leftmargin=*]
+    \item Construct the anchor prefix from the last $K = 90$ frames of the previously generated chunk, along with the corresponding audio context.
+    \item Sample a latent variable $\mathbf{z}_n$ from the flow-matching prior (Section~\ref{sec:prior}), conditioned on speaker speech, identity, gesture type, and anchor-prefix.
+    \item Decode the chunk using the temporal VAE decoder conditioned on $\mathbf{z}_n$, audio, and anchor-prefix.
+    \item Apply overlap blending between consecutive chunks to smooth residual boundary artifacts.
+\end{enumerate}
+
+% -----------------------------------------------------------------------
+\subsection{LLM-Based Gesture Type Planner}
 \label{sec:planner}
 % -----------------------------------------------------------------------
+The VAE decoder requires a gesture type label $g$ to determine whether a segment should exhibit rhythmic beat gestures or meaning-driven semantic gestures.
+While BEAT2 provides such annotations during training, these labels are not available for arbitrary speech at inference time.
+To address this limitation, we introduce a gesture type planner that predicts structured segment-level annotations directly from speech transcripts.
 
-The VAE decoder conditions on a gesture-type label $g$ that controls
-whether the current segment should exhibit rhythmic beat gestures or
-meaning-reinforcing semantic gestures.
-At training time these labels come from BEAT2 \texttt{.sem}
-annotations, which are dataset-specific and unavailable for arbitrary
-speech.
-We bridge this gap with a \emph{gesture-type planner}: a language model
-fine-tuned to predict per-segment gesture types directly from a speech
-transcript.
+\noindent \textbf{Task formulation.}
+Given a word-level transcript with timestamps, the planner predicts a sequence of non-overlapping segments.
+Each segment is defined by a start time, end time, and a gesture type:
 
-\paragraph{Input and output.}
-The planner receives a word-level transcript with per-word timestamps
-(extracted from a forced-alignment TextGrid file or an ASR system).
-It outputs a JSON array of segments:
 \begin{verbatim}
 [{"start_sec": 0.0, "end_sec": 2.4,
   "gesture_type": "beat", "text": "..."},
-  ...]
+ ...]
 \end{verbatim}
-This JSON is consumed directly by the chunk-segmentation step of the
-autoregressive generation pipeline (Section~\ref{sec:autoreg}).
+This segmentation output directly drives the chunk construction process in the autoregressive generation pipeline (Section~\ref{sec:autoreg}).
 
-\paragraph{Model and fine-tuning.}
-We fine-tune \textbf{Qwen3.5-9B}~\cite{qwen3} using LoRA via SFTTrainer
-on the BEAT2 training split~\cite{emage2024}.
-Each training example is a chat-format conversation:
-a fixed system prompt describing the output schema, a user message
-containing the word-timed transcript, and an assistant response
-containing the ground-truth JSON segment plan.
-The ground-truth plans are derived automatically from the BEAT2
-\texttt{.sem} files, so the planner learns the BEAT2 gesture-type
-vocabulary and boundary conventions without manual annotation.
+\noindent \textbf{Model and training.}
+We finetune Qwen3.5-9B~\cite{qwen3} using LoRA~\cite{lora2022} and supervised finetuning.
+Training data, ground-truth segmentations and gesture type labels, is derived from the BEAT2 dataset~\cite{emage2024}.
+Each training sample is formatted as a chat-style interaction consisting of a system prompt defining the output schema, a transcript input with timestamps, and a structured JSON segment plan as the target output.
+This formulation enables the model to jointly learn temporal segmentation and gesture type classification.
 
-\paragraph{Few-shot vs.\ fine-tuned variants.}
-We evaluate both a few-shot prompted Qwen3.5-9B (no training) and a
-LoRA fine-tuned variant trained on the BEAT2 \texttt{.sem}
-distribution.
-As shown in Section~\ref{sec:planner_eval}, the two variants land at
-different operating points: the few-shot model is conservative
-(higher per-frame accuracy, fewer predicted semantic segments), while
-the fine-tuned model is aggressive (denser segmentation, more
-predicted semantic events).
-Section~\ref{sec:planner_eval} characterizes this trade-off
-quantitatively.
+% \noindent \textbf{Data construction.}
+% Since manual annotations are not available, BEAT2 \texttt{.sem} files are automatically converted into segment-level supervision.
+% This allows the planner to learn dataset-specific gesture conventions without requiring additional human labeling.
 
-\paragraph{Inference.}
-At inference time, the planner runs once per recording, after which its
-output drives the chunk-building and autoregressive generation steps
-described in Section~\ref{sec:autoreg}, as illustrated in
-Figure~\ref{fig:overview}.
+\noindent \textbf{Few-shot and finetuned variants.}
+We evaluate both a zero-/few-shot prompted Qwen3.5-9B and a LoRA finetuned variant trained with BEAT2-derived supervision.
+The two models exhibit different behaviors: the few-shot variant produces conservative segmentations with fewer semantic gestures, while the finetuned model generates denser and more expressive segment structures.
+A detailed comparison is provided in Section~\ref{sec:planner_eval}.
+
+\noindent \textbf{Inference.}
+At inference time, the planner defines the temporal segmentation and gesture type assignments used to construct chunks for the autoregressive decoder (Section~\ref{sec:autoreg}).
+
+\subsection{Overall Training Strategy}
+\label{sec:train}
+GestureCraft is trained in a staged manner to decouple representation learning, temporal generation, and structured conditioning.
+This design ensures stability while allowing each component to specialize before joint interaction.
+
+\noindent \textbf{Training stages.}
+We first train the hierarchical VAE described in Section~\ref{sec:vae} jointly with the anchor-conditioned objectives of Section~\ref{sec:autoreg}, using the reconstruction, KL, continuation velocity, and anchor-reconstruction losses.
+The trained VAE encoder and decoder are then used to learn a conditional flow-matching latent prior (Section~\ref{sec:prior}) while keeping the VAE parameters fixed.
+Finally, we optionally apply end-to-end perceptual finetuning of the prior to align generated motion with high-level quality objectives.
+
+\noindent \textbf{High-level conditioning modules.}
+The LLM-based gesture type planner (Section~\ref{sec:planner}) is trained independently and kept fixed during all motion model training stages.
+Its predicted segmentations are used as conditioning signals for both the autoregressive decoder and the flow-matching prior, but are not updated.
+
+\noindent \textbf{Frozen and trainable components.}
+During flow-matching training, the VAE is frozen to provide a stable latent representation.
+In the perceptual finetuning stage, the VAE decoder remains frozen and gradients are propagated to refine the flow-matching prior.
+
+\noindent \textbf{Stage objectives.}
+The system is not trained with a single joint loss.
+Each stage optimizes its own objective:
+(i) The VAE is trained with reconstruction and KL losses ($\mathcal{L}_\text{VAE}$),
+(ii) The flow-matching prior is then trained with the rectified-flow loss ($\mathcal{L}_\text{flow}$) on top of the frozen VAE, and optionally finetuned with perceptual losses ($\mathcal{L}_\text{e2e}$), and
+(iii) The anchor-conditioned decoder is trained jointly with the VAE under $\mathcal{L}_\text{cont}$ and the anchor-reconstruction loss.
 
 % ======================================================================
 % SECTION: Experiments
@@ -800,97 +387,80 @@ Figure~\ref{fig:overview}.
 
 \section{Experiments}
 \label{sec:experiments}
-
-\paragraph{Dataset.}
-We use the BEAT2 (v2.0.0) English corpus~\cite{emage2024}, which contains
-recordings from 25 speakers with per-frame SMPL-X pose annotations,
-audio, transcripts, and gesture-type (\texttt{.sem}) labels.
+\noindent \textbf{Dataset.}
+We use the BEAT2 (v2.0.0) English corpus~\cite{emage2024}, which contains recordings from 25 speakers with per-frame SMPL-X pose annotations, audio, transcripts, and gesture type labels.
 We follow the official train/val/test split.
-All prior methods that report results on BEAT2 evaluate on
-\emph{Speaker~2 only}; we train a single model on \emph{all 25 speakers}
-jointly and evaluate on both the Speaker~2 test set (for direct
-comparison with baselines) and the full 25-speaker test set (to
-verify cross-speaker generalization).
+All prior methods that report results on BEAT2 evaluate only on Speaker~2 only.
+However, we train a single model on all 25 speakers jointly and evaluate on both the Speaker~2 test set (for direct comparison with baselines) and the full 25-speakers test set (to verify cross-speaker generalization).
 
-\paragraph{Evaluation protocol.}
-All hyperparameter and checkpoint selection decisions---including the
-classifier-free guidance scale $g$---are made on the \emph{validation} split.
-Final metrics are computed on the \emph{test} split with 5 random seeds;
-we report mean~$\pm$~std.
-FGD and BC are reported in the scale used by prior work (raw metric $\times 10$).
+\noindent \textbf{Baselines.}
+We compare against state-of-the-art co-speech gesture generation methods including recent VQ-based and diffusion-based approaches trained on BEAT2.
+All baselines are evaluated under their reported settings when available, or re-evaluated using official checkpoints when provided.
+
+% \noindent \textbf{Evaluation metrics.}
+% We evaluate motion quality using Fr\'echet Gesture Distance (FGD) and Beat Consistency (BC).
+% FGD measures distributional similarity between generated and ground-truth motion in a learned feature space, while BC measures alignment between motion dynamics and speech rhythm.
+
+\noindent \textbf{Evaluation protocol.}
+All hyperparameter and checkpoint selection decisions---including the classifier-free guidance scale $w$---are made on the validation split.
+Final metrics are computed on the test split with 5 random seeds; we report mean~$\pm$~std.
+% FGD and BC are reported in the scale used by prior work (raw metric $\times 10$).
+
+\noindent \textbf{Implementation details.}
+We optimize all components using Adam~\cite{adam2015} with learning rate $10^{-4}$ for VAE and decoder training, and $10^{-5}$ for flow-matching finetuning.
+Models are trained for 400 epochs with batch size 8.
+The KL coefficient is fixed at $\beta = 10^{-5}$ to prioritize reconstruction fidelity.
 
 \subsection{Quantitative Comparison}
+We report three standard metrics following \citet{emage2024}: Fr\'echet Gesture Distance~\cite{trimodal} (FGD, lower is better), Beat Consistency (BC, closer to ground-truth is better), and L1 diversity (L1Div, higher is better).
+Our numbers are averaged over 5 random seeds; mean $\pm$ standard deviation are reported.
+Baseline numbers in Table~\ref{tab:results} are sourced from \citet{syntalker}'s comparison table, in which all baselines are trained or finetuned only on Speaker~2.
 
-We report three standard metrics following \citet{emage2024}:
-\textbf{FGD} (Fr\'echet Gesture Distance~\cite{trimodal}; lower is
-better), \textbf{BC} (Beat Consistency; $\rightarrow$ closer to GT is
-better), and \textbf{L1Div} (L1 diversity; higher is better).
-Our numbers are averaged over 5 random seeds; mean $\pm$ standard
-deviation are reported.
-Baseline numbers in Table~\ref{tab:results} are sourced from
-\citet{syntalker}'s comparison table, in which all baselines are
-trained or fine-tuned on Speaker~2 only.
-
-\paragraph{Speaker~2 comparison.}
+\noindent \textbf{Speaker~2 comparison.}
 Table~\ref{tab:results} compares our method against prior work on the
 standard Speaker~2 test set.
-Despite being trained on all 25 speakers simultaneously rather than
-fine-tuned on Speaker~2 alone, our model achieves the best FGD and
-the highest L1Div, with a BC within $0.05$ of ground truth.
+Despite being trained on all 25 speakers simultaneously rather than finetuned on Speaker~2 alone, our model achieves the best FGD and the highest L1Div, with a BC within $0.05$ of ground-truth.
 
-\paragraph{Cross-speaker generalization.}
-Table~\ref{tab:results_allspk} reports results on the full 25-speaker
+\noindent \textbf{Cross-speaker generalization.}
+Table~\ref{tab:results_allspk} reports results on the full 25-speakers
 test set.
-We compare against EMAGE~\cite{emage2024} and SynTalker~\cite{syntalker},
-both re-trained from their official codebases on the full 25-speaker
-training set with default hyperparameters and the
-$\text{\texttt{speaker\_dims}}\!=\!31$ multi-speaker setting.
-Our model achieves FGD~$3.42$, roughly $6{\times}$ lower than
-SynTalker ($20.61$) and $7{\times}$ lower than EMAGE ($23.69$).
-For reference, the released EMAGE checkpoint (trained on Speaker~2
-only) scores FGD~$25.1$ on this test set; re-training on all speakers
-yields only a modest improvement, indicating the limitation is
-architectural rather than a matter of training-data coverage.
-To further verify that the aggregate result is not masking collapse on
-a subset of speakers, we evaluate the all-speaker prior (without any
-speaker-specific fine-tuning) on each speaker individually.
-Per-speaker FGD has median $8.86$ and ranges from $4.41$ on the
-easiest speaker to $34.1$ on the hardest, with $23$ of $25$ speakers
-below FGD $18$ and only one outlier above $20$.
-The hardest speakers correspond to those with the most distinctive
-motion styles in BEAT2.
-Per-speaker fine-tuning further reduces error on individual speakers,
-as demonstrated by the Speaker~2 results in Table~\ref{tab:results}
-($\text{FGD} = 4.374$ for the spk2-fine-tuned model vs.\ $5.82$ for the
-all-speaker model evaluated on Speaker~2 alone).
+We compare against EMAGE~\cite{emage2024} and SynTalker~\cite{syntalker}, both re-trained from their official codebases on the full 25-speakers training set with default hyperparameters.
+Our model achieves FGD~$3.42$, roughly $6{\times}$ lower than SynTalker ($20.61$) and $7{\times}$ lower than EMAGE ($23.69$).
+The EMAGE all-speakers model also collapses on Beat Consistency (BC~$0.85$ vs.\ ground-truth~$4.55$), indicating a broader failure to track speech rhythm at scale rather than an isolated FGD regression.
+For reference, the released EMAGE checkpoint (trained only on Speaker~2) scores FGD~$25.1$ on this test set; re-training on all speakers yields only a modest improvement (FGD~$23.694$), indicating the limitation is architectural rather than a matter of training data coverage.
+% To further verify that the aggregate result is not masking collapse on a subset of speakers, we evaluate the all-speakers prior (without any speaker-specific finetuning) on each speaker individually.
+% Per-speaker FGD has median $8.86$ and ranges from $4.41$ on the easiest speaker to $34.1$ on the hardest, with $23$ of $25$ speakers below FGD $18$ and only one outlier above $20$.
+% The hardest speakers correspond to those with the most distinctive motion styles in BEAT2.
+% Per-speaker fine-tuning further reduces error on individual speakers, as demonstrated by the Speaker~2 results in Table~\ref{tab:results} ($\text{FGD} = 4.374$ for the spk2-fine-tuned model vs.\ $5.82$ for the all-speaker model evaluated on Speaker~2 alone).
 
-\begin{table*}[t]
+\begin{table}[t]
+\scriptsize
 \caption{Quantitative comparison on BEAT2 Speaker~2 test set.
-  $\downarrow$ lower is better; $\uparrow$ higher is better;
-  $\rightarrow$ closer to GT is better.
-  All baselines are trained/fine-tuned on Speaker~2 only.
-  \textbf{Our model is trained on all 25 speakers} and evaluated here
-  on Speaker~2 for a fair comparison, demonstrating that
-  cross-speaker generalization does not sacrifice per-speaker quality.
-  Baseline numbers are sourced from \citet{syntalker}'s comparison
-  table; ``SynTalker (w/o both)'' refers to the SynTalker variant
-  trained without both motion-representation pre-training and
-  text--motion alignment pre-training, as defined in their paper.
-  The ground-truth row reports the canonical BEAT2 reference values
-  from \citet{emage2024}.
-  All metrics follow the standard BEAT2 reporting convention
-  (FGD$\times 10^{-1}$, BC$\times 10^{-1}$, diversity).
-  Best in \textbf{bold}; second best \underline{underlined}.}
+  % $\downarrow$ lower is better; $\uparrow$ higher is better;
+  % $\rightarrow$ closer to GT is better.
+  % All baselines are trained/fine-tuned on Speaker~2 only.
+  % \textbf{Our model is trained on all 25 speakers} and evaluated here
+  % on Speaker~2 for a fair comparison, demonstrating that
+  % cross-speaker generalization does not sacrifice per-speaker quality.
+  % Baseline numbers are sourced from \citet{syntalker}'s comparison
+  % table; ``SynTalker (w/o both)'' refers to the SynTalker variant
+  % trained without both motion-representation pre-training and
+  % text--motion alignment pre-training, as defined in their paper.
+  % The ground-truth row reports the canonical BEAT2 reference values
+  % from \citet{emage2024}.
+  % All metrics follow the standard BEAT2 reporting convention
+  % (FGD$\times 10^{-1}$, BC$\times 10^{-1}$, diversity).
+  Best in \textbf{bold} and second best \underline{underlined}.}
 \label{tab:results}
 \begin{tabular}{lccc}
 \toprule
-Method
-  & FGD $\downarrow$
-  & BC $\rightarrow$
-  & L1Div $\uparrow$ \\
+\textbf{Method}
+  & \textbf{FGD $\downarrow$}
+  & \textbf{BC $\rightarrow$}
+  & \textbf{L1Div $\uparrow$} \\
 \midrule
 S2G~\cite{s2g}
-  & 25.129           & 6.902  & 7.783  \\
+  & 25.129           & \underline{6.902}  & 7.783  \\
 Trimodal~\cite{trimodal}
   & 19.759           & 6.442  & 8.894  \\
 HA2G~\cite{ha2g}
@@ -902,127 +472,103 @@ Habibie~\cite{habibie}
 CaMN~\cite{beat}
   & 8.752            & 6.731  & 9.279  \\
 DiffuseStyleGesture~\cite{diffusestylegesture2023}
-  & 10.137           & 6.891  & 11.075 \\
+  & 10.137           & \textbf{6.891}  & 11.075 \\
 TalkSHOW~\cite{talkshow2023}
   & 7.313            & 6.783  & 12.859 \\
 EMAGE~\cite{emage2024}
   & 5.423            & 6.794  & 13.057 \\
 SynTalker (w/o both)~\cite{syntalker}
-  & \underline{4.687}& \underline{7.363} & \underline{12.425} \\
+  & \underline{4.687}& 7.363 & \underline{12.425} \\
 \midrule
 Ground Truth~\cite{emage2024}
   & 0.000            & 6.896             & 13.074            \\
 \midrule
-\textbf{Ours}
-  & \textbf{4.374} $\pm$ 0.067
-  & \textbf{6.944}  $\pm$ 0.060
-  & \textbf{14.85}  $\pm$ 0.25   \\
+\textbf{GestureCraft (ours)}
+  & \textbf{4.374}$^{\scriptstyle \pm 0.067}$
+  & 6.944$^{\scriptstyle \pm 0.060}$
+  & \textbf{14.85}$^{\scriptstyle \pm 0.250}$ \\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
-% Pending before submission:
-%   - Replace fig:overview and fig:vae_train placeholders.
-%   - Optional: hierarchy ablation, supplementary video, user study.
 % Convention: FGD/BC paper-scale = raw x 10 (evaluate_generation.py:418).
 % Hands MPJPE rows in tab:recon_* are averaged across left/right hands.
 
-\begin{table*}[t]
-\caption{Generation results on the full BEAT2 25-speaker test set
-  (265 recordings).
-  Both baselines are re-trained from the official codebase on the
-  full 25-speaker training set with default hyperparameters and the
-  $\text{\texttt{speaker\_dims}}\!=\!31$ multi-speaker setting,
-  selecting checkpoints by best validation FGD.
-  Baseline rows are single-seed; our row is mean~$\pm$~std over
-  5 seeds. FGD and BC reported on the paper scale (raw~$\times 10$).}
+\begin{table}[t]
+\scriptsize
+\caption{Quantitative comparison on BEAT2 full test set.
+  % (265 recordings).
+  % Both baselines are re-trained from the official codebase on the
+  % full 25-speaker training set with default hyperparameters and the
+  % $\text{\texttt{speaker\_dims}}\!=\!31$ multi-speaker setting,
+  % selecting checkpoints by best validation FGD.
+  % Baseline rows are single-seed; our row is mean over 5 seeds.
+  % FGD and BC reported on the paper scale (raw~$\times 10$).
+  }
 \label{tab:results_allspk}
 \begin{tabular}{lccc}
 \toprule
-Method & FGD $\downarrow$ & BC $\rightarrow$ & L1Div $\uparrow$ \\
+\textbf{Method} & \textbf{FGD $\downarrow$} & \textbf{BC $\rightarrow$} & \textbf{L1Div $\uparrow$} \\
 \midrule
 EMAGE~\cite{emage2024}                 & 23.694            & 0.848               & 7.80              \\
 SynTalker~\cite{syntalker}             & 20.605            & 6.154               & 8.51              \\
-\textbf{Ours (all-spk)}                & $\mathbf{3.416 \pm 0.073}$ & $4.348 \pm 0.016$ & $\mathbf{9.311 \pm 0.049}$ \\
+\textbf{GestureCraft (all-spk)}                & \textbf{3.416} & \textbf{4.348} & \textbf{9.311} \\
 \midrule
 Ground Truth                           & 0.000             & 4.555               & 8.427             \\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
 \subsection{Ablation Studies}
+We isolate the contribution of each component on the Speaker~2 test set (Table~\ref{tab:ablation}), using the same evaluation protocol as Table~\ref{tab:results}.
 
-We isolate the contribution of each pipeline component on the
-Speaker~2 test set (Table~\ref{tab:ablation}), using the same
-evaluation protocol as Table~\ref{tab:results}.
-
-\begin{table*}[t]
-\caption{Ablation on Speaker~2 test set (5 seeds, $g\!=\!0.5$).
+\begin{table}[t]
+\scriptsize
+\caption{Ablation on BEAT2 Speaker~2 test set.% (mean over 5 seeds, $w\!=\!0.5$).
   Each row removes or replaces one component of the full pipeline.}
 \label{tab:ablation}
 \begin{tabular}{lccc}
 \toprule
-Configuration & FGD $\downarrow$ & BC $\rightarrow$ & L1Div $\uparrow$ \\
+\textbf{Configuration} & \textbf{FGD $\downarrow$} & \textbf{BC $\rightarrow$} & \textbf{L1Div $\uparrow$} \\
 \midrule
-\textbf{Full model}            & $\mathbf{4.374 \pm 0.067}$ & $6.944 \pm 0.060$ & $14.85 \pm 0.25$ \\
-w/o anchor prefix              & $5.183 \pm 0.113$          & $6.721 \pm 0.056$ & $14.77 \pm 0.13$ \\
-w/o flow-matching prior        & $7.384 \pm 0.072$          & $7.681 \pm 0.025$ & $9.94 \pm 0.06$ \\
-w/o E2E perceptual FT          & $5.373 \pm 0.089$          & $6.791 \pm 0.039$ & $15.10 \pm 0.21$ \\
+Full model            & 4.374 & 6.944 & 14.85 \\
+w/o anchor-prefix              & 5.183          & 6.721 & 14.77 \\
+w/o flow-matching prior        & 7.384          & 7.681 & 9.94 \\
+w/o E2E perceptual FT          & 5.373          & 6.791 & 15.10 \\
 \midrule
-Ground Truth                   & 0.000                         & 6.896             & 13.074           \\
+Ground Truth                   & 0.000          & 6.896 & 13.074 \\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
-\paragraph{Anchor prefix.}
-Removing anchor-prefix conditioning (\texttt{anchor\_k=0} at inference)
-degrades FGD by $0.81$ and pushes BC further from ground truth.
-This confirms that exposing the decoder to the previous chunk's motion
-context is necessary for temporal coherence across autoregressive
-boundaries.
+\noindent \textbf{Anchor-prefix.}
+Disabling anchor-prefix conditioning at inference degrades FGD by $0.81$ and pushes BC further from ground-truth.
+This confirms that exposing the decoder to the previous chunk's motion context is necessary for temporal coherence across autoregressive boundaries.
 
-\paragraph{Flow-matching prior.}
-Replacing the learned prior with $\mathbf{z} \!\sim\! \mathcal{N}(\mathbf{0}, \mathbf{I})$
-sampling causes the largest single drop in quality, increasing FGD by
-$3.01$ and collapsing diversity (L1Div drops from $14.85$ to $9.94$).
-BC counter-intuitively rises above ground truth, but this reflects
-over-animated, audio-uncorrelated motion that registers spurious beat
-hits rather than genuinely speech-aligned gesture.
+\noindent \textbf{Flow-matching prior.}
+Replacing the learned prior with $\mathbf{z} \!\sim\! \mathcal{N}(\mathbf{0}, \mathbf{I})$ sampling causes the largest single drop in quality, increasing FGD by $3.01$ and collapsing diversity (L1Div drops from $14.85$ to $9.94$).
+BC counter-intuitively rises above ground truth, but this reflects over-animated, audio-uncorrelated motion that registers spurious beat hits rather than genuinely speech-aligned gestures.
 
-\paragraph{End-to-end perceptual fine-tuning.}
-Skipping Stage~2 of the prior (using the all-speaker pretrained prior
-without speaker-specific perceptual fine-tuning) increases FGD by
-roughly $1.0$ on Speaker~2.
-This isolates the contribution of the combined flow-matching, FGD
-moment-matching, and beat-alignment losses
-(Section~\ref{sec:prior}) from that of all-speaker pretraining alone.
+\noindent \textbf{End-to-end perceptual finetuning.}
+Skipping Stage~2 of the prior (using the all-speakers pretrained prior without speaker-specific perceptual finetuning) increases FGD by roughly $1.0$ on Speaker~2.
+This isolates the contribution of the combined flow-matching, FGD moment-matching, and beat-alignment losses (Section~\ref{sec:prior}) from that of all-speakers pretraining alone.
 
-\paragraph{Continuation velocity loss.}
-We isolate the continuation velocity loss (Eq.~\ref{eq:cont}) by
-retraining the VAE with $\lambda_\text{cont} \!=\! 0$ (and the auxiliary
-anchor reconstruction weight set to zero), keeping all other settings
-identical.
-Boundary metrics in Table~\ref{tab:cont_ablation} are computed in chunked
-autoregressive \emph{reconstruction} mode (encode ground-truth chunks,
-decode each chunk using the previous decoded chunk as anchor), so the
-prior is not involved and the comparison isolates the decoder's
-boundary behavior.
-Removing the loss roughly \emph{doubles} the boundary velocity error
-(33.4 vs.~16.6\,mm) and the boundary jerk (37.9 vs.~17.3\,mm), confirming
-that the loss is the principal mechanism behind seamless chunk-to-chunk
-transitions; within-chunk reconstruction quality also improves slightly
-when the loss is enabled, suggesting it acts as a mild global regularizer
-in addition to its boundary-specific role.
+\noindent \textbf{Continuation velocity loss.}
+We isolate the continuation velocity loss by retraining the VAE with $\lambda_\text{cont} \!=\! 0$ (and the auxiliary anchor reconstruction weight set to zero), keeping all other settings identical.
+Boundary metrics in Table~\ref{tab:cont_ablation} are computed in chunked autoregressive reconstruction mode (encode ground-truth chunks, decode each chunk using the previous decoded chunk as anchor), so the prior is not involved and the comparison isolates the decoder's boundary behavior.
+Removing the loss roughly doubles the boundary velocity error (33.4 vs.~16.6\,mm) and the boundary jerk (37.9 vs.~17.3\,mm), confirming that the loss is the principal mechanism behind seamless chunk-to-chunk transitions; within-chunk reconstruction quality also improves slightly when the loss is enabled, suggesting it acts as a mild global regularizer in addition to its boundary-specific role.
 
 \begin{table}[t]
-\caption{Continuation velocity loss ablation. Speaker~2 test set,
-  chunked autoregressive reconstruction (encoder $\boldsymbol{\mu}$, no
-  prior). Boundary metrics computed across chunk transitions; within-chunk
-  MPJPE averaged across non-boundary frames. Lower is better.}
+\scriptsize
+\caption{Continuation velocity loss ablation.% Speaker~2 test set,
+  % chunked autoregressive reconstruction (encoder $\boldsymbol{\mu}$, no
+  % prior). Boundary metrics computed across chunk transitions; within-chunk
+  % MPJPE averaged across non-boundary frames. Lower is better.
+  }
 \label{tab:cont_ablation}
 \begin{tabular}{lcc}
 \toprule
-Metric (mm) & w/o $\mathcal{L}_\text{cont}$ & w/ $\mathcal{L}_\text{cont}$ \\
+\textbf{Metric (mm)} & \textbf{w/o $\mathcal{L}_\text{cont}$} & \textbf{w/ $\mathcal{L}_\text{cont}$} \\
 \midrule
 Boundary velocity error $\downarrow$ & 33.37 & \textbf{16.64} \\
 Boundary jerk $\downarrow$           & 37.88 & \textbf{17.31} \\
@@ -1031,30 +577,30 @@ Within-chunk MPJPE $\downarrow$      & 34.71 & \textbf{29.63} \\
 \end{tabular}
 \end{table}
 
-\subsection{LLM Planner Evaluation}
+\noindent \textbf{LLM Planner Evaluation.}
 \label{sec:planner_eval}
-
-We evaluate two LLM planner variants on the Speaker~2 test set: a
-\emph{few-shot} prompted Qwen3.5-9B and a \emph{LoRA fine-tuned}
-Qwen3.5-9B (Section~\ref{sec:planner}).
-Both produce a per-segment beat-vs-semantic segmentation that
-replaces the ground-truth BEAT2 \texttt{.sem} file at inference.
+We evaluate two LLM planner variants on the Speaker~2 test set: a few-shot prompted Qwen3.5-9B and a LoRA fine-tuned
+Qwen3.5-9B.
+Both produce a per-segment beat vs. semantic segmentation, which replaces the ground-truth gesture type labels in the BEAT2 dataset during inference.
 We report three categories of result:
-(i)~segmentation quality against GT (Table~\ref{tab:planner_quality}),
-(ii)~downstream generation quality
-(Table~\ref{tab:planner_downstream}), and
-(iii)~the impact of gesture-type conditioning itself, isolated via
-\emph{all-beat} and \emph{all-semantic} ablations.
+(i)~Segmentation quality against ground-truth (Table~\ref{tab:planner_quality}),
+(ii)~Downstream generation quality (Table~\ref{tab:planner_downstream}), and
+(iii)~Impact of gesture type conditioning itself, isolated via all-beat and all-semantic ablations.
+On Speaker~2, gesture type conditioning provides limited signal: the all-beat baseline ($4.337$) is within $0.04$ FGD of GT-conditioning ($4.374$), since $\sim$63\% of Speaker~2 chunks are beat.
+The all-semantic ablation ($+1.55$ FGD) confirms that the conditioning channel is functional, but the all-beat result bounds how much any planner can gain from it on this distribution.
+Both LLM planners cost $\sim$$0.2$ FGD relative to ground-truth labels (few-shot $+0.20$, LoRA $+0.26$).
+The planner's contribution is therefore not a quality improvement but an engineering one: it removes the inference-time dependency on annotations at a small, well-characterized cost, demonstrating that transcripts alone supply enough signal to approximate BEAT2's gesture-type taxonomy.
 
 \begin{table}[t]
-\caption{Segmentation quality of the LLM planners on the Speaker~2
-  test set (15 recordings), measured against the BEAT2 \texttt{.sem}
-  ground truth.
-  Boundary~F1 uses a $0.5$\,s tolerance.}
+\scriptsize
+\caption{Segmentation quality of the LLM planners.}% on the Speaker~2
+  % test set (15 recordings), measured against the BEAT2 \texttt{.sem}
+  % ground truth.
+  % Boundary~F1 uses a $0.5$\,s tolerance.}
 \label{tab:planner_quality}
 \begin{tabular}{lcc}
 \toprule
-Metric & Few-shot & LoRA-FT \\
+\textbf{Metric} & \textbf{Few-shot} & \textbf{LoRA-FT} \\
 \midrule
 Per-frame accuracy $\uparrow$ & \textbf{75.0\%} & 57.8\% \\
 Macro-F1 (beat + semantic) $\uparrow$ & \textbf{52.1\%} & 46.5\% \\
@@ -1068,128 +614,54 @@ Mean segments per recording (GT $21.8$) & 12.5 & 48.8 \\
 \end{tabular}
 \end{table}
 
-\begin{table*}[t]
-\caption{Downstream generation quality with each gesture-type label
-  source (Speaker~2 test set, 5 seeds, $g\!=\!0.5$).
-  All-beat / all-semantic isolate the contribution of gesture-type
-  conditioning itself.}
+\begin{table}[t]
+\scriptsize
+\caption{Generation quality based on gesture type source.}% (Speaker~2 test set, mean over 5 seeds, $w\!=\!0.5$).
+  % All-beat / all-semantic isolate the contribution of gesture-type
+  % conditioning itself.}
 \label{tab:planner_downstream}
 \begin{tabular}{lccc}
 \toprule
-Label source & FGD $\downarrow$ & BC $\rightarrow$ & L1Div $\uparrow$ \\
+\textbf{Label source} & \textbf{FGD $\downarrow$} & \textbf{BC $\rightarrow$} & \textbf{L1Div $\uparrow$} \\
 \midrule
-GT BEAT2 \texttt{.sem}      & $\mathbf{4.374 \pm 0.067}$ & $6.944 \pm 0.060$ & $14.85 \pm 0.25$ \\
-LLM (few-shot)              & $4.575 \pm 0.149$          & $6.906 \pm 0.059$ & $14.69 \pm 0.16$ \\
-LLM (LoRA-FT)               & $4.634 \pm 0.107$          & $7.132 \pm 0.065$ & $15.15 \pm 0.45$ \\
-All-beat                    & $4.337 \pm 0.072$          & $6.926 \pm 0.054$ & $14.54 \pm 0.25$ \\
-All-semantic                & $5.882 \pm 0.213$          & $7.019 \pm 0.062$ & $15.99 \pm 0.38$ \\
+GT BEAT2 \texttt{.sem}      & \textbf{4.374} & 6.944 & 14.85 \\
+LLM (few-shot)              & 4.575          & 6.906 & 14.69 \\
+LLM (LoRA-FT)               & 4.634          & 7.132 & 15.15 \\
+All-beat                    & 4.337          & 6.926 & 14.54 \\
+All-semantic                & 5.882          & 7.019 & 15.99 \\
 \midrule
-Ground Truth                & 0.000                       & 6.896             & 13.074            \\
+Ground Truth                & 0.000          & 6.896 & 13.074 \\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
-\paragraph{Planner characterization.}
-The two planners exhibit complementary failure modes
-(Table~\ref{tab:planner_quality}).
-The few-shot prompted model is conservative: it under-predicts
-semantic segments ($11.3\%$ vs.\ GT $21.1\%$), achieves the highest
-per-frame accuracy ($75.0\%$) largely by defaulting to the
-beat majority class, and misses most segment boundaries (boundary
-recall $15.4\%$).
-The LoRA-fine-tuned model goes the opposite way: it over-segments
-($48.8$ vs.\ GT $21.8$ segments per recording), catches more
-boundaries (boundary~F1 $35.1\%$, recall $62.9\%$) and more semantic
-events (semantic~F1 $23.9\%$), but at the cost of lower frame accuracy.
 
-\paragraph{Gesture-type conditioning is functional but bounded.}
-The \emph{all-semantic} vs.\ \emph{all-beat} contrast in
-Table~\ref{tab:planner_downstream} shows that gesture-type
-conditioning meaningfully shapes the decoded distribution: forcing
-the model into a wrong-class regime (all-semantic on a beat-majority
-test set) inflates FGD by $1.55$.
-Because Speaker~2 chunks are $\sim$63\% beat, the all-beat baseline
-is close to GT-conditioning ($-0.04$ FGD), making this particular
-test set unusually forgiving of conservative planners.
-Both LLM planners preserve downstream quality to within $0.26$ FGD of
-GT-conditioning; the few-shot model lands closer to GT despite weaker
-boundary detection, while the LoRA model's slight FGD penalty
-($+0.26$) tracks its tendency to over-predict semantic on a
-beat-dominated recording set.
+% \noindent \textbf{Implications.}
 
-\paragraph{A diversity--fidelity trade-off explains the planner
-results.}
-Beat gestures in BEAT2 are stylized and low-variance; semantic
-gestures are content-specific and high-variance.
-Conditioning the decoder on more semantic labels therefore shifts
-decoded motion toward higher diversity but also greater distance from
-the empirical motion distribution.
-The two extremes in Table~\ref{tab:planner_downstream} make this
-explicit: the all-beat baseline yields the lowest L1Div ($14.54$) and
-lowest FGD ($4.337$); the all-semantic baseline yields the highest
-L1Div ($15.99$) and highest FGD ($5.882$).
-GT-conditioning and both LLM planners interpolate between these
-extremes in lockstep with their semantic-label rate---the LoRA
-planner ($37.4\%$ semantic) sits at the high-diversity end ($14.85$
-$\to$ $15.15$ L1Div), the few-shot planner ($11.3\%$ semantic) at
-the high-fidelity end, and GT ($21.1\%$ semantic) close to the
-optimal middle point.
-Both planners are therefore valid operating points on this
-trade-off rather than uniformly worse approximations of GT; choosing
-between them is a deployment decision about how much stylistic
-variability is desired.
+\noindent \textbf{VAE reconstruction upper bound vs.\ VQ baselines.}
+Tables~\ref{tab:recon_spk2} and~\ref{tab:recon_allspk} report reconstruction quality using the encoder's posterior mean $\boldsymbol{\mu}$ (deterministic; no sampling noise) in chunked autoregressive mode.
+We compare against the official pre-trained tokenizers of EMAGE and SynTalker (RVQ-VAE).
+Our VAE and EMAGE's VQ-VAE share a chunked autoregressive evaluation protocol; SynTalker is evaluated under its own full-recording protocol (53 joints, zero global translation) since its non-chunked encoding makes a uniform protocol infeasible.
+On the standard Speaker~2 test set, our continuous-latent VAE achieves the lowest joint error on both body and hands, with overall MPJPE about $1.7{\times}$ lower than the next-best VQ baseline (SynTalker) and $2.8{\times}$ lower than EMAGE; SynTalker's RVQ-VAE achieves lower FGD than our VAE on this set, but considerably higher joint error.
+On the full 25-speakers test set the gap widens substantially: both VQ baselines were trained on Speaker~2 alone and degrade sharply outside their training distribution, while a single all-speakers instance of our VAE preserves reconstruction quality across the full corpus.
+The all-speakers variant of our VAE remains within $\sim$2\,mm of the speaker-finetuned variant on Speaker~2, indicating that a single continuous tokenizer generalizes across the full corpus without per-speaker codebooks.
 
-\paragraph{Implications.}
-The headline value of the LLM planner is functional: it removes the
-inference-time dependency on dataset-specific \texttt{.sem}
-annotations with a small, well-characterized FGD cost.
-The fact that an off-the-shelf few-shot prompted LLM achieves
-$\sim$95\% of GT-conditioning quality (FGD $4.575$ vs.\ $4.374$) with
-no fine-tuning indicates that, for the gesture-type taxonomy used in
-BEAT2, transcripts alone supply enough signal to recover most of the
-downstream benefit of gesture-type conditioning.
-
-\paragraph{VAE reconstruction upper bound vs.\ VQ baselines.}
-Tables~\ref{tab:recon_spk2} and~\ref{tab:recon_allspk} report
-reconstruction quality using the encoder's posterior mean
-$\boldsymbol{\mu}$ (deterministic; no sampling noise) in chunked
-autoregressive mode.
-We compare against the official pre-trained tokenizers of EMAGE and
-SynTalker (RVQ-VAE).
-Our VAE and EMAGE's VQ-VAE share a chunked autoregressive evaluation
-protocol; SynTalker is evaluated under its own full-recording protocol
-(53 joints, zero global translation) since its non-chunked encoding
-makes a uniform protocol infeasible.
-On the standard Speaker~2 test set, our continuous-latent VAE achieves
-the lowest joint error on both body and hands, with overall MPJPE
-about $1.7{\times}$ lower than the next-best VQ baseline (SynTalker)
-and $2.8{\times}$ lower than EMAGE; SynTalker's RVQ-VAE achieves lower
-FGD than our VAE on this set, but considerably higher joint error.
-On the full 25-speaker test set the gap widens substantially:
-both VQ baselines were trained on Speaker~2 alone and degrade sharply
-outside their training distribution, while a single all-speaker
-instance of our VAE preserves reconstruction quality across the full
-corpus.
-The all-speaker variant of our VAE remains within $\sim$2\,mm of the
-speaker-fine-tuned variant on Speaker~2, indicating that a single
-continuous tokenizer generalizes across the full corpus without
-per-speaker codebooks.
-
-\begin{table*}[t]
-\caption{Reconstruction upper bound on the BEAT2 Speaker~2 test set
-  (15 recordings; encoder $\boldsymbol{\mu}$, no sampling).
-  Per-part MPJPE in mm.
-  Our VAE and EMAGE's VQ-VAE are evaluated under a shared chunked
-  autoregressive protocol; SynTalker is evaluated using its own
-  protocol since their full-recording VQ encoding does not fit the
-  chunked autoregressive setup.
-  $^*$SynTalker: full-recording VQ encode/decode, 53 joints (excluding
-  eyes), zero global translation, per-recording averaging.}
+\begin{table}[t]
+\scriptsize
+\caption{Reconstruction upper bound on the BEAT2 Speaker~2 test set.}
+  % (15 recordings; encoder $\boldsymbol{\mu}$, no sampling).
+  % Per-part MPJPE in mm.
+  % Our VAE and EMAGE's VQ-VAE are evaluated under a shared chunked
+  % autoregressive protocol; SynTalker is evaluated using its own
+  % protocol since their full-recording VQ encoding does not fit the
+  % chunked autoregressive setup.
+  % $^*$SynTalker: full-recording VQ encode/decode, 53 joints (excluding
+  % eyes), zero global translation, per-recording averaging.}
 \label{tab:recon_spk2}
 \begin{tabular}{lcccc}
 \toprule
- & EMAGE & SynTalker$^*$ & Ours          & Ours        \\
- & VQ-VAE & RVQ-VAE      & (all-speaker) & (spk2-FT)   \\
+ & \textbf{EMAGE} & \textbf{SynTalker$^*$} & \textbf{GestureCraft} & \textbf{GestureCraft} \\
+ & \textbf{VQ-VAE} & \textbf{RVQ-VAE}      & \textbf{(all-spk)} & \textbf{(spk2-FT)}   \\
 \midrule
 FGD $\downarrow$         & 4.394 & \textbf{1.66} & 3.232 & 2.69 \\
 MPJPE (all) $\downarrow$ & 90.55 & 55.72 & 34.84 & \textbf{32.66} \\
@@ -1197,59 +669,51 @@ MPJPE body $\downarrow$  & 54.74 & 24.49 & 22.76 & \textbf{21.29} \\
 MPJPE hands $\downarrow$ & 120.19 & 79.62 & 45.35 & \textbf{42.52} \\
 \bottomrule
 \end{tabular}
-\end{table*}
+\end{table}
 
 \begin{table}[t]
-\caption{Reconstruction upper bound on the full BEAT2 25-speaker test
-  set (265 recordings). Both VQ baselines are trained on Speaker~2 only
-  and degrade sharply outside that training distribution; our single
-  all-speaker continuous VAE preserves reconstruction quality across the
-  full corpus, with overall MPJPE roughly $4\times$ lower than either
-  VQ baseline.
-  $^*$SynTalker: full-recording VQ encode/decode, 53 joints (excluding
-  eyes), zero global translation.}
+\scriptsize
+\caption{Reconstruction upper bound on the full BEAT2 25-speakers test
+  set.}% (265 recordings). Both VQ baselines are trained on Speaker~2 only
+  % and degrade sharply outside that training distribution; our single
+  % all-speaker continuous VAE preserves reconstruction quality across the
+  % full corpus, with overall MPJPE roughly $4\times$ lower than either
+  % VQ baseline.
+  % $^*$SynTalker: full-recording VQ encode/decode, 53 joints (excluding
+  % eyes), zero global translation.}
 \label{tab:recon_allspk}
 \begin{tabular}{lccc}
 \toprule
- & EMAGE & SynTalker$^*$ & Ours \\
- & VQ-VAE & RVQ-VAE & (all-spk) \\
+ & \textbf{EMAGE} & \textbf{SynTalker$^*$} & \textbf{GestureCraft} \\
+ & \textbf{VQ-VAE} & \textbf{RVQ-VAE} & \textbf{(all-spk)} \\
 \midrule
 FGD $\downarrow$         & 21.32  & 18.58  & \textbf{1.94} \\
 MPJPE (all) $\downarrow$ & 112.25 & 113.66 & \textbf{26.03} \\
 MPJPE body $\downarrow$  & 71.55  & 55.57  & \textbf{17.71} \\
-MPJPE hands $\downarrow$ & 145.22 & 157.72 & \textbf{33.36} \\
+MPJPE hands $\downarrow$ & 145.22 & 157.72 & \textbf{33.41} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{Smoothness: continuous vs.\ discrete tokenizers.}
-A central motivation for our continuous-latent VAE is that discrete
-codebooks introduce velocity discontinuities at codeword transitions.
-Table~\ref{tab:smoothness} measures this directly: for each tokenizer,
-we run chunked autoregressive reconstruction of the Speaker~2 test set,
-forward through SMPL-X to obtain joint positions, and compute mean
-acceleration, mean jerk, and the 99th-percentile jerk (which captures
-boundary spikes invisible in mean statistics).
-Our continuous VAE is the smoothest non-GT method on every axis,
-with mean jerk $2.6{\times}$ lower than EMAGE.
-The P99 metric is the most discriminative---it isolates the codeword
-transition artifacts---and quantifies the snapping pattern predicted
-by the discretization step in VQ tokenizers: our P99 jerk is
-$2.6{\times}$ GT while EMAGE's is $13.5{\times}$ GT.
-SynTalker's RVQ sits between EMAGE and ours, consistent with
-multi-level residual quantization partially mitigating single-codebook
+\noindent \textbf{Smoothness in continuous vs.\ discrete tokenizers.}
+A central motivation for our continuous-latent VAE is that discrete codebooks introduce velocity discontinuities at codeword transitions.
+Table~\ref{tab:smoothness} measures this directly: for each tokenizer, we run chunked autoregressive reconstruction of the Speaker~2 test set, forward through SMPL-X to obtain joint positions, and compute mean acceleration, mean jerk, and the 99th-percentile jerk (which captures boundary spikes invisible in mean statistics).
+Our continuous VAE is the smoothest non-ground-truth method on every axis, with mean jerk $2.6{\times}$ lower than EMAGE.
+The P99 metric is the most discriminative---it isolates the codeword transition artifacts---and quantifies the snapping pattern predicted by the discretization step in VQ tokenizers: our P99 jerk is $2.6{\times}$ GT while EMAGE's is $13.5{\times}$ GT.
+SynTalker's RVQ sits between EMAGE and ours, consistent with multi-level residual quantization partially mitigating single-codebook
 snapping.
 
 \begin{table}[t]
-\caption{Joint-position smoothness on the Speaker~2 test set
-  (chunked autoregressive reconstruction, SMPL-X forward kinematics).
-  Lower is better; closer to ground truth is closer to natural motion.
-  P99 Jerk captures outlier spikes characteristic of codebook
-  transitions.}
+\scriptsize
+\caption{Joint-position smoothness on the Speaker~2 test set.}
+  % (chunked autoregressive reconstruction, SMPL-X forward kinematics).
+  % Lower is better; closer to ground truth is closer to natural motion.
+  % P99 Jerk captures outlier spikes characteristic of codebook
+  % transitions.}
 \label{tab:smoothness}
 \begin{tabular}{lccc}
 \toprule
-Method & Mean Accel $\downarrow$ & Mean Jerk $\downarrow$ & P99 Jerk $\downarrow$ \\
+\textbf{Method} & \textbf{Mean Accel $\downarrow$} & \textbf{Mean Jerk $\downarrow$} & \textbf{P99 Jerk $\downarrow$} \\
 \midrule
 Ground Truth          & 3.70  & 2.33  & 16.73  \\
 \textbf{Ours}         & \textbf{4.25}  & \textbf{5.33}  & \textbf{42.70}  \\
@@ -1262,59 +726,22 @@ EMAGE VQ-VAE          & 10.22 & 13.76 & 226.51 \\
 % ======================================================================
 % SECTION: Conclusion and Limitations
 % ======================================================================
-
-\section{Conclusion and Limitations}
+\section{Conclusion}
 \label{sec:conclusion}
+We presented \textbf{GestureCraft}, a framework for audio-driven co-speech gesture synthesis built on a continuous, body-part-hierarchical latent rather than the discrete codebooks that dominate recent work.
+Three design choices distinguish the system: a Gaussian latent partitioned channel-wise into face, body, and hand slices, each supervised by per-level body-part-localized partial-output losses; an anchor-prefix conditioning scheme paired with a continuation velocity loss that trains the decoder directly for kinematic continuity across chunk boundaries; and a conditional flow-matching prior pretrained on all $25$ BEAT2 speakers and fine-tuned end-to-end with FGD moment-matching and beat-alignment perceptual losses.
+On the standard Speaker~2 benchmark, GestureCraft sets a new state of the art on FGD and diversity while keeping BC within $0.05$ of ground truth.
+Trained jointly across all $25$ BEAT2 speakers, the system also provides, to our knowledge, the first published evaluation of cross-speaker generalization on the full BEAT2 25-speaker test set, outperforming the strongest re-trained VQ baselines on FGD by a wide margin.
+% Ablations confirm that each component---anchor-prefix conditioning, the continuation velocity loss, the flow-matching prior, and the speaker-specific perceptual fine-tuning---contributes a measurable share of the final quality.
+% A complementary LLM gesture-type planner removes the inference-time
+% dependency on dataset-specific \texttt{.sem} annotations at a small, well-characterized cost ($\sim$$0.2$ FGD vs.\ GT labels), demonstrating that transcripts alone supply enough signal to approximate BEAT2's gesture-type taxonomy.
 
-We presented \textbf{GestureCraft}, a framework for audio-driven
-co-speech gesture synthesis built on a continuous, body-part-hierarchical
-latent rather than the discrete codebooks that dominate recent work.
-Three design choices distinguish the system: a Gaussian latent
-partitioned channel-wise into face, body, and hand slices, each
-supervised by per-level body-part-localized partial-output losses; an
-anchor-prefix conditioning scheme paired with a continuation velocity
-loss that trains the decoder directly for kinematic continuity across
-chunk boundaries; and a
-conditional flow-matching prior pretrained on all $25$ BEAT2 speakers
-and fine-tuned end-to-end with FGD moment-matching and beat-alignment
-perceptual losses.
-On the standard Speaker~2 benchmark, GestureCraft sets a new state of
-the art on FGD and diversity while keeping BC within $0.05$ of
-ground truth.
-Trained jointly across all $25$ BEAT2 speakers, the system also
-produces, to our knowledge, the first published cross-speaker
-generalization result on the standard BEAT2 evaluation protocol,
-outperforming the strongest re-trained VQ baselines on FGD by a wide
-margin.
-Ablations confirm that each component---anchor-prefix conditioning, the
-continuation velocity loss, the flow-matching prior, and the
-speaker-specific perceptual fine-tuning---contributes a measurable share
-of the final quality.
-A complementary LLM gesture-type planner removes the inference-time
-dependency on dataset-specific \texttt{.sem} annotations and exposes a
-diversity-fidelity trade-off that can be tuned by the choice of
-planner.
-
-\paragraph{Limitations and future work.}
-Our evaluation is restricted to the BEAT2 corpus; we have not tested
-generalization to other gesture datasets or to in-the-wild speech, and
-gesture conventions may differ across languages and cultures
-beyond what BEAT2 covers.
-Generation runs offline through a $50$-step midpoint-method ODE
-integration of the
-flow-matching prior plus an autoregressive decoder; we have not
-characterized real-time performance.
-The body-part hierarchy is hand-designed (face / body / hands) rather
-than learned; whether a learned grouping would further improve
-reconstruction or generation remains an open question.
-The LLM planner's downstream impact on FGD is bounded by how much
-information gesture-type conditioning provides in the first place---we
-measure this directly through the \emph{all-beat} and
-\emph{all-semantic} ablations, but a stronger conditioning signal (for
-example, finer-grained or example-based) may unlock further gains.
-Finally, although our results include both quantitative comparison and
-per-component ablation, a comprehensive user study would further
-substantiate the perceptual claims; we leave it to future work.
+% \noindent \textbf{Limitations and future work.}
+% Our evaluation is restricted to the BEAT2 corpus; we have not tested generalization to other gesture datasets or to in-the-wild speech, and gesture conventions may differ across languages and cultures beyond what BEAT2 covers.
+% Generation runs offline through a $50$-step midpoint-method ODE integration of the flow-matching prior plus an autoregressive decoder; we have not characterized real-time performance.
+% The body-part hierarchy is hand-designed (face / body / hands) rather than learned; whether a learned grouping would further improve reconstruction or generation remains an open question.
+% The LLM planner's downstream impact on FGD is bounded by how much information gesture-type conditioning provides in the first place---we measure this directly through the \emph{all-beat} and \emph{all-semantic} ablations, but a stronger conditioning signal (for example, finer-grained or example-based) may unlock further gains.
+% Finally, although our results include both quantitative comparison and per-component ablation, a comprehensive user study would further substantiate the perceptual claims; we leave it to future work.
 
 % ======================================================================
 % BIBLIOGRAPHY
@@ -1326,3 +753,49 @@ substantiate the perceptual claims; we leave it to future work.
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{sample-bibliography}
+
+% ======================================================================
+% FIGURE-ONLY PAGES (up to 2 pages allowed beyond the main text limit)
+% ======================================================================
+\clearpage
+
+\begin{figure*}[p]
+  \centering
+  \includegraphics[width=\textwidth,height=0.78\textheight,keepaspectratio]{per_speaker_fgd.pdf}
+  \Description{Three-panel figure showing per-speaker FGD on the full BEAT2
+    25-speaker test set. (a) sorted bars; (b) pairwise scatter where all 25
+    points lie above the y=x parity line; (c) per-speaker improvement ratio.}
+  \caption{\textbf{Per-speaker FGD on the full BEAT2 25-speaker test set.}
+    \textbf{(a)} Sorted horizontal bars (paper scale, lower is better);
+    dashed lines mark each method's per-speaker mean.
+    \textbf{(b)} Pairwise scatter: each point is one speaker; all $25$
+    points lie above the diagonal $y\!=\!x$, so GestureCraft achieves lower
+    FGD than EMAGE on every speaker.
+    \textbf{(c)} Per-speaker improvement ratio (EMAGE\,/\,Ours):
+    median $4.68{\times}$, range $1.68$--$8.20{\times}$.}
+  \label{fig:per_speaker}
+\end{figure*}
+
+\clearpage
+
+\begin{figure*}[p]
+  \centering
+  \includegraphics[width=\textwidth,height=0.82\textheight,keepaspectratio]{slice_ablation.pdf}
+  \Description{Eight-row figure showing latent slice ablations on two
+    BEAT2 Speaker~2 test clips. Top rows show ground truth; subsequent rows
+    show the full-latent reconstruction and partial-output decoding with
+    higher slices zeroed.}
+  \caption{\textbf{Latent slice ablations on two BEAT2 Speaker~2 clips.}
+    Top row: GT. Second row: full-latent reconstruction (encoder
+    $\boldsymbol{\mu}$, no sampling), which closely tracks GT. Lower
+    rows: partial-output decoding with higher slices zeroed.
+    Reading from the bottom up: $\mathbf{z}^{(0)}$ alone already
+    recovers most of the coarse pose; adding $\mathbf{z}^{(1)}$ makes the
+    body motion richer and closer to GT; including $\mathbf{z}^{(2)}$
+    (full $\mathbf{z}$) further improves fine hand and finger detail.
+    The per-level loss supervises level~$\ell$ on body part $\ell$
+    (face/body/hands), but the global loss on the full-latent output lets
+    the decoder share information across slices, so ablation produces
+    gracefully degraded motion rather than strict per-part isolation.}
+  \label{fig:slice_ablation}
+\end{figure*}
